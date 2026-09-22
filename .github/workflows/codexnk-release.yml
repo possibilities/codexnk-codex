@@ -1,11 +1,14 @@
-# Public GitHub Release for the codexnk patch.
-# Tag `codexnk-vX.Y.Z` and push it. This does not use upstream's signed
-# rust-v* release pipeline.
+# codexnk CI. Tests the invocation-axes patch and, on a codexnk-v* tag,
+# builds release binaries. Upstream workflows in this tree stay disabled
+# on the public repo; openai/codex covers code this patch does not change.
 
 name: codexnk-release
 
 on:
   push:
+    branches:
+      - main
+      - carry/invocation-axes
     tags:
       - "codexnk-v*"
   workflow_dispatch:
@@ -14,8 +17,35 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    name: invocation-axes tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - name: Test invocation axes
+        shell: bash
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+        run: just test -p codex-cli invocation_axes
+
   build:
     name: Build ${{ matrix.target }}
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/codexnk-v')
     runs-on: ${{ matrix.runner }}
     defaults:
       run:
@@ -52,17 +82,20 @@ jobs:
 
       - name: Package
         shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          name="codex-${{ matrix.target }}"
-          mkdir -p "$name"
-          cp "target/${{ matrix.target }}/release/codex" "$name/codex"
-          tar -czf "${name}.tar.gz" "$name"
+          bin="${CARGO_TARGET_DIR}/${TARGET}/release/codex"
+          name="codex-${TARGET}"
+          mkdir -p "${GITHUB_WORKSPACE}/${name}"
+          cp "$bin" "${GITHUB_WORKSPACE}/${name}/codex"
+          tar -C "${GITHUB_WORKSPACE}" -czf "${GITHUB_WORKSPACE}/${name}.tar.gz" "$name"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
           name: codex-${{ matrix.target }}
-          path: codex-rs/codex-${{ matrix.target }}.tar.gz
+          path: codex-${{ matrix.target }}.tar.gz
 
   release:
     name: Publish GitHub Release
