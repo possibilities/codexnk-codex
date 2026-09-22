@@ -67,6 +67,7 @@ mod doctor;
 mod exec_server_args_tests;
 mod exec_server_auth;
 mod exec_server_telemetry;
+mod invocation_axes;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
@@ -610,6 +611,18 @@ struct AppServerCommand {
 
     #[command(flatten)]
     auth: codex_app_server::AppServerWebsocketAuthArgs,
+
+    /// Saved credential directory. Must be set with `--capabilities` and `--history-dir`.
+    #[arg(long, value_name = "DIR")]
+    identity: Option<PathBuf>,
+
+    /// Capability directory: `skills/`, `config.toml` `[mcp_servers]`, and `SYSTEM_APPEND.md`.
+    #[arg(long, value_name = "DIR")]
+    capabilities: Option<PathBuf>,
+
+    /// Shared session history directory. Independent of identity and capabilities.
+    #[arg(long, value_name = "DIR")]
+    history_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Parser)]
@@ -1385,7 +1398,27 @@ async fn cli_main(
                 managed_daemon,
                 analytics_default_enabled,
                 auth,
+                identity,
+                capabilities,
+                history_dir,
             } = app_server_cli;
+            let invocation_axes =
+                invocation_axes::invocation_axes_from_flags(identity, capabilities, history_dir)?;
+            if invocation_axes.is_some() && subcommand.is_some() {
+                anyhow::bail!(
+                    "--identity, --capabilities, and --history-dir are only valid when running the app server"
+                );
+            }
+            let invocation_loader_overrides = if let Some(axes) = &invocation_axes {
+                let prepared = invocation_axes::prepare_invocation_axes(axes)?;
+                invocation_axes::apply_invocation_home(&prepared)?;
+                LoaderOverrides {
+                    ignore_project_config: true,
+                    ..LoaderOverrides::default()
+                }
+            } else {
+                LoaderOverrides::default()
+            };
             let strict_config = app_server_strict_config || root_strict_config;
             reject_strict_config_for_app_server_subcommand(strict_config, subcommand.as_ref())?;
             reject_remote_mode_for_app_server_subcommand(
@@ -1421,7 +1454,7 @@ async fn cli_main(
                     let exit = codex_app_server::run_main_with_transport_options(
                         arg0_paths.clone(),
                         root_config_overrides,
-                        LoaderOverrides::default(),
+                        invocation_loader_overrides,
                         strict_config,
                         analytics_default_enabled,
                         transport,
