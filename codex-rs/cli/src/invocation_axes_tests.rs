@@ -1,0 +1,122 @@
+use super::InvocationAxes;
+use super::invocation_axes_from_flags;
+use super::prepare_invocation_axes;
+use pretty_assertions::assert_eq;
+use std::fs;
+use std::path::Path;
+
+#[test]
+fn flags_must_be_all_present_or_all_absent() {
+    assert!(
+        invocation_axes_from_flags(None, None, None)
+            .unwrap()
+            .is_none()
+    );
+    let err = invocation_axes_from_flags(Some("id".into()), None, Some("hist".into()))
+        .expect_err("partial flags");
+    assert!(err.to_string().contains("must be set together"));
+}
+
+#[test]
+fn axes_share_history_and_keep_identity_and_capabilities_apart() {
+    let identity_a = tempfile::tempdir().expect("identity a");
+    let identity_b = tempfile::tempdir().expect("identity b");
+    let capabilities_a = tempfile::tempdir().expect("capabilities a");
+    let capabilities_b = tempfile::tempdir().expect("capabilities b");
+    let history = tempfile::tempdir().expect("history");
+
+    fs::write(identity_a.path().join("auth.json"), "{\"token\":\"alpha\"}").expect("auth a");
+    fs::write(identity_b.path().join("auth.json"), "{\"token\":\"beta\"}").expect("auth b");
+    fs::write(
+        capabilities_a.path().join("config.toml"),
+        "model = \"not-copied\"\n\n[mcp_servers.alpha]\ncommand = \"echo\"\n",
+    )
+    .expect("config a");
+    fs::write(
+        capabilities_a.path().join("SYSTEM_APPEND.md"),
+        "alpha prompt\n",
+    )
+    .expect("append a");
+    fs::create_dir(capabilities_a.path().join("skills")).expect("skills a");
+    fs::write(
+        capabilities_a.path().join("skills").join("from-a.txt"),
+        "skill-a",
+    )
+    .expect("skill file");
+    fs::write(
+        capabilities_b.path().join("SYSTEM_APPEND.md"),
+        "beta prompt\n",
+    )
+    .expect("append b");
+
+    let prepared_a = prepare_invocation_axes(&InvocationAxes {
+        identity: identity_a.path().to_path_buf(),
+        capabilities: capabilities_a.path().to_path_buf(),
+        history: history.path().to_path_buf(),
+    })
+    .expect("prepare a");
+    let prepared_b = prepare_invocation_axes(&InvocationAxes {
+        identity: identity_b.path().to_path_buf(),
+        capabilities: capabilities_b.path().to_path_buf(),
+        history: history.path().to_path_buf(),
+    })
+    .expect("prepare b");
+
+    let sessions_a = fs::canonicalize(prepared_a.codex_home.join("sessions")).expect("sessions a");
+    let sessions_b = fs::canonicalize(prepared_b.codex_home.join("sessions")).expect("sessions b");
+    let shared_sessions = fs::canonicalize(history.path().join("sessions")).expect("shared");
+    assert_eq!(sessions_a, shared_sessions);
+    assert_eq!(sessions_b, shared_sessions);
+
+    fs::write(sessions_a.join("thread.txt"), "same-history").expect("write session");
+    assert_eq!(
+        fs::read_to_string(sessions_b.join("thread.txt")).expect("read other runtime"),
+        "same-history"
+    );
+
+    assert_eq!(
+        fs::read(identity_a.path().join("auth.json")).expect("identity unchanged"),
+        b"{\"token\":\"alpha\"}"
+    );
+    assert_eq!(
+        fs::read(prepared_a.codex_home.join("auth.json")).expect("runtime auth a"),
+        b"{\"token\":\"alpha\"}"
+    );
+    assert_eq!(
+        fs::read(prepared_b.codex_home.join("auth.json")).expect("runtime auth b"),
+        b"{\"token\":\"beta\"}"
+    );
+
+    let config_a = fs::read_to_string(prepared_a.codex_home.join("config.toml")).expect("config a");
+    assert!(config_a.contains("alpha prompt"));
+    assert!(config_a.contains("[mcp_servers.alpha]"));
+    assert!(!config_a.contains("not-copied"));
+    let config_b = fs::read_to_string(prepared_b.codex_home.join("config.toml")).expect("config b");
+    assert!(config_b.contains("beta prompt"));
+    assert!(!config_b.contains("mcp_servers"));
+
+    assert_eq!(
+        fs::read_to_string(prepared_a.codex_home.join("skills").join("from-a.txt")).expect("skill"),
+        "skill-a"
+    );
+    assert!(
+        !prepared_b
+            .codex_home
+            .join("skills")
+            .join("from-a.txt")
+            .exists()
+    );
+
+    cleanup_runtime(&prepared_a.codex_home);
+    cleanup_runtime(&prepared_b.codex_home);
+}
+
+fn cleanup_runtime(codex_home: &Path) {
+    for name in ["sessions", "archived_sessions", "skills"] {
+        let path = codex_home.join(name);
+        if path.exists() {
+            let _ = fs::remove_file(&path);
+        }
+    }
+    let _ = fs::remove_dir_all(codex_home);
+}
