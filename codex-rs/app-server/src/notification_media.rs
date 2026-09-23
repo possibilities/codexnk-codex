@@ -94,6 +94,7 @@ pub(crate) fn without_notification_media(notification: ServerNotification) -> Se
         | ServerNotification::FileChangeOutputDelta(_)
         | ServerNotification::FileChangePatchUpdated(_)
         | ServerNotification::ServerRequestResolved(_)
+        | ServerNotification::InputMiddlewareResolved(_)
         | ServerNotification::McpToolCallProgress(_)
         | ServerNotification::McpServerOauthLoginCompleted(_)
         | ServerNotification::McpServerStatusUpdated(_)

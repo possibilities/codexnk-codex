@@ -1035,6 +1035,30 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::TurnStartResponse,
     },
+    #[experimental("thread/input/middleware/attach")]
+    InputMiddlewareAttach => "thread/input/middleware/attach" {
+        params: v2::InputMiddlewareAttachParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::InputMiddlewareAttachResponse,
+    },
+    #[experimental("thread/input/middleware/detach")]
+    InputMiddlewareDetach => "thread/input/middleware/detach" {
+        params: v2::InputMiddlewareDetachParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::InputMiddlewareDetachResponse,
+    },
+    #[experimental("thread/input/read")]
+    InputMiddlewareRead => "thread/input/read" {
+        params: v2::InputMiddlewareReadParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::InputMiddlewareReadResponse,
+    },
+    #[experimental("thread/input/complete")]
+    InputMiddlewareComplete => "thread/input/complete" {
+        params: v2::InputMiddlewareCompleteParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::InputMiddlewareCompleteResponse,
+    },
     #[experimental("turn/settings/update")]
     TurnSettingsUpdate => "turn/settings/update" {
         params: v2::TurnSettingsUpdateParams,
@@ -1760,6 +1784,10 @@ impl TryFrom<JSONRPCRequest> for ServerRequest {
 
 server_request_definitions! {
     /// NEW APIs
+    InputMiddlewareRequest => "thread/input/requestDisposition" {
+        params: v2::InputMiddlewareRequestParams,
+        response: v2::InputMiddlewareRequestResponse,
+    },
     /// Sent when approval is requested for a specific command execution.
     /// This request is used for Turns started via turn/start.
     CommandExecutionRequestApproval => "item/commandExecution/requestApproval" {
@@ -1915,6 +1943,8 @@ pub struct FuzzyFileSearchSessionCompletedNotification {
 
 server_notification_definitions! {
     /// NEW NOTIFICATIONS
+    #[experimental("thread/input/resolved")]
+    InputMiddlewareResolved => "thread/input/resolved" (v2::InputMiddlewareResolvedNotification),
     Error => "error" (v2::ErrorNotification),
     ThreadStarted => "thread/started" (v2::ThreadStartedNotification),
     ThreadStatusChanged => "thread/status/changed" (v2::ThreadStatusChangedNotification),

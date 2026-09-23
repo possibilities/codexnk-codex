@@ -1,0 +1,62 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "oneOf": [
+    {
+      "properties": {
+        "type": {
+          "enum": [
+            "pass"
+          ],
+          "title": "PassInputMiddlewareRequestResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "type"
+      ],
+      "title": "PassInputMiddlewareRequestResponse",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "text": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "replace"
+          ],
+          "title": "ReplaceInputMiddlewareRequestResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "text",
+        "type"
+      ],
+      "title": "ReplaceInputMiddlewareRequestResponse",
+      "type": "object"
+    },
+    {
+      "properties": {
+        "operationId": {
+          "type": "string"
+        },
+        "type": {
+          "enum": [
+            "intercept"
+          ],
+          "title": "InterceptInputMiddlewareRequestResponseType",
+          "type": "string"
+        }
+      },
+      "required": [
+        "operationId",
+        "type"
+      ],
+      "title": "InterceptInputMiddlewareRequestResponse",
+      "type": "object"
+    }
+  ],
+  "title": "InputMiddlewareRequestResponse"
+}

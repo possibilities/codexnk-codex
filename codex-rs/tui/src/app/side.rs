@@ -92,6 +92,7 @@ impl SideParentStatus {
 
     pub(super) fn for_request(request: &ServerRequest) -> Option<Self> {
         match request {
+            ServerRequest::InputMiddlewareRequest { .. } => None,
             ServerRequest::ToolRequestUserInput { .. } => Some(SideParentStatus::NeedsInput),
             ServerRequest::CommandExecutionRequestApproval { .. }
             | ServerRequest::FileChangeRequestApproval { .. }
