@@ -148,6 +148,7 @@ pub(crate) struct ThreadScopedOutgoingMessageSender {
 
 struct PendingCallbackEntry {
     verification_owner: Option<ConnectionId>,
+    input_middleware_owner: Option<ConnectionId>,
     verification_auth_revision: Option<u64>,
     verification_identity: Option<user_verification_auth::Identity>,
     callback: oneshot::Sender<ClientRequestResult>,
@@ -336,6 +337,16 @@ impl OutgoingMessageSender {
         let id = self.next_request_id();
         let outgoing_message_id = id.clone();
         let request = request.request_with_id(outgoing_message_id.clone());
+        let (tx_approve, rx_approve) = oneshot::channel();
+        let input_middleware_owner =
+            if matches!(&request, ServerRequest::InputMiddlewareRequest { .. }) {
+                match connection_ids {
+                    Some([owner]) => Some(*owner),
+                    _ => return (outgoing_message_id, rx_approve),
+                }
+            } else {
+                None
+            };
         let user_verification = matches!(
             &request,
             ServerRequest::McpServerElicitationRequest { params, .. }
@@ -354,7 +365,6 @@ impl OutgoingMessageSender {
                 && (verification_auth_revision != self.verification_auth_revision()
                     || verification_identity != self.verification_identity())
         };
-        let (tx_approve, rx_approve) = oneshot::channel();
         // One app owns this ceremony. Reconnect and other subscribers cannot answer it.
         let verification_owner = if user_verification {
             let eligible = self.verification_connections.lock().await;
@@ -378,6 +388,7 @@ impl OutgoingMessageSender {
                 id,
                 PendingCallbackEntry {
                     verification_owner,
+                    input_middleware_owner,
                     verification_auth_revision,
                     verification_identity: verification_identity.clone(),
                     callback: tx_approve,
@@ -424,8 +435,10 @@ impl OutgoingMessageSender {
                         send_error = Some(err);
                         break;
                     } else {
-                        self.analytics_events_client
-                            .track_server_request(connection_id.0, request.clone());
+                        if input_middleware_owner.is_none() {
+                            self.analytics_events_client
+                                .track_server_request(connection_id.0, request.clone());
+                        }
                     }
                 }
                 match send_error {
@@ -476,6 +489,7 @@ impl OutgoingMessageSender {
             Some((id, entry)) => {
                 let completed_at_ms = now_unix_timestamp_ms();
                 if entry.verification_owner.is_none()
+                    && entry.input_middleware_owner.is_none()
                     && let Ok(response) = entry.request.response_from_result(result.clone())
                 {
                     tracing::info!("<- response: {response:?}");
@@ -565,6 +579,12 @@ impl OutgoingMessageSender {
     ) -> Option<(RequestId, PendingCallbackEntry)> {
         let mut callbacks = self.request_id_to_callback.lock().await;
         let entry = callbacks.get(id)?;
+        if entry
+            .input_middleware_owner
+            .is_some_and(|owner| owner != connection_id)
+        {
+            return None;
+        }
         if let Some(owner) = entry.verification_owner {
             if owner != connection_id {
                 return None;
@@ -587,8 +607,10 @@ impl OutgoingMessageSender {
         let mut requests = request_id_to_callback
             .values()
             .filter_map(|entry| {
-                (entry.thread_id == Some(thread_id) && entry.verification_owner.is_none())
-                    .then_some(entry.request.clone())
+                (entry.thread_id == Some(thread_id)
+                    && entry.verification_owner.is_none()
+                    && entry.input_middleware_owner.is_none())
+                .then_some(entry.request.clone())
             })
             .collect::<Vec<_>>();
         requests.sort_by(|left, right| left.id().cmp(right.id()));

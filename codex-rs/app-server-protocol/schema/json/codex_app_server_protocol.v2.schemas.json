@@ -9717,6 +9717,178 @@
       "title": "InitializeParams",
       "type": "object"
     },
+    "InputMiddlewareDisposition": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "passed"
+              ],
+              "title": "PassedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "PassedInputMiddlewareDisposition",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "replaced"
+              ],
+              "title": "ReplacedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ReplacedInputMiddlewareDisposition",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "operationId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "intercepted"
+              ],
+              "title": "InterceptedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "type"
+          ],
+          "title": "InterceptedInputMiddlewareDisposition",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "rejected"
+              ],
+              "title": "RejectedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "RejectedInputMiddlewareDisposition",
+          "type": "object"
+        }
+      ]
+    },
+    "InputMiddlewareEffectReceipt": {
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/InputMiddlewareEffectStatus"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "InputMiddlewareEffectStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "InputMiddlewareRecord": {
+      "properties": {
+        "disposition": {
+          "$ref": "#/definitions/InputMiddlewareDisposition"
+        },
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InputMiddlewareEffectReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputId": {
+          "type": "string"
+        },
+        "originalText": {
+          "type": "string"
+        },
+        "selectedText": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "disposition",
+        "inputId",
+        "originalText",
+        "threadId"
+      ],
+      "type": "object"
+    },
+    "InputMiddlewareResolvedNotification": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "disposition": {
+          "$ref": "#/definitions/InputMiddlewareDisposition"
+        },
+        "effect": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/InputMiddlewareEffectReceipt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "inputId": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "disposition",
+        "inputId",
+        "threadId"
+      ],
+      "title": "InputMiddlewareResolvedNotification",
+      "type": "object"
+    },
+    "InputMiddlewareUnavailablePolicy": {
+      "enum": [
+        "pass",
+        "reject"
+      ],
+      "type": "string"
+    },
     "InputModality": {
       "description": "Canonical user-input modality tags advertised by a model.",
       "oneOf": [
@@ -16409,6 +16581,26 @@
       "oneOf": [
         {
           "description": "NEW NOTIFICATIONS",
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/input/resolved"
+              ],
+              "title": "Thread/input/resolvedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/InputMiddlewareResolvedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/input/resolvedNotification",
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "enum": [

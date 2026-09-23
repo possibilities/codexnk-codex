@@ -17,6 +17,9 @@ impl ChatWidget {
 
         let id = request.id().to_string();
         match request {
+            ServerRequest::InputMiddlewareRequest { .. } => {
+                self.add_error_message("Input middleware is not available in TUI.".to_string());
+            }
             ServerRequest::CommandExecutionRequestApproval { params, .. } => {
                 let fallback_cwd = self.config.cwd.clone();
                 self.on_exec_approval_request(

@@ -18,6 +18,11 @@ use super::session::SessionSettingsUpdate;
 use super::thread_settings;
 use super::turn_context::NewTurnContextOptions;
 use super::turn_context::TurnContext;
+use crate::HumanInputCandidate;
+use crate::HumanInputCommit;
+use crate::HumanInputDecision;
+use crate::HumanInputMiddlewareRequest;
+use crate::HumanInputOrigin;
 use crate::context::GuardianContextMode;
 use crate::state::ActiveTurn;
 use crate::state::TurnState;
@@ -49,6 +54,9 @@ use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::sync::Arc;
 use uuid::Uuid;
+
+use crate::input_middleware::MAX_MIDDLEWARE_INPUTS;
+const MAX_MIDDLEWARE_TEXT_CHARS: usize = 32768;
 
 #[cfg(test)]
 #[path = "turn_input_tests.rs"]
@@ -204,10 +212,148 @@ impl PreparedTurnInputSettings {
 
 pub(super) async fn handle(
     session: &Arc<Session>,
-    request: TurnInputRequest,
+    mut request: TurnInputRequest,
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
+    // The no-owner branch is intentionally a local check with no network wait.
+    let owner = session
+        .human_input_middleware
+        .read()
+        .expect("human-input middleware lock poisoned")
+        .clone();
+    if let (Some(owner), Some(source)) = (owner, request.human_input_source.as_ref()) {
+        if source.id.is_empty() {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::InputMiddlewareUnavailable,
+            });
+        }
+        let input_id = format!(
+            "{}:{}",
+            if source.realtime {
+                "realtime"
+            } else {
+                "client"
+            },
+            source.id
+        );
+        let content = match &mut request.input {
+            SubmittedTurnInput::UserInput { content, .. } => content,
+            _ => {
+                return Err(CodexErr::InvalidRequest(
+                    "middleware requires user text".into(),
+                ));
+            }
+        };
+        let [
+            UserInput::Text {
+                text,
+                text_elements,
+            },
+        ] = content.as_mut_slice()
+        else {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::InputMiddlewareUnavailable,
+            });
+        };
+        if !text_elements.is_empty() || text.chars().count() > MAX_MIDDLEWARE_TEXT_CHARS {
+            return Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::InputMiddlewareUnavailable,
+            });
+        }
+        {
+            let mut seen = session.admitted_human_inputs.lock().await;
+            if seen.contains(&input_id) {
+                return Ok(TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::DuplicateHumanInput { input_id },
+                });
+            }
+            if seen.len() >= MAX_MIDDLEWARE_INPUTS {
+                return Ok(TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::InputMiddlewareUnavailable,
+                });
+            }
+            seen.insert(input_id.clone());
+        }
+        let (reply, response) = tokio::sync::oneshot::channel();
+        let (commit_sender, committed) = tokio::sync::oneshot::channel();
+        let (stored, storage_ack) = tokio::sync::oneshot::channel();
+        let candidate = HumanInputCandidate {
+            thread_id: session.thread_id,
+            input_id: input_id.clone(),
+            origin: if source.realtime {
+                HumanInputOrigin::Realtime
+            } else {
+                HumanInputOrigin::Client
+            },
+            text: text.clone(),
+        };
+        let decision = if owner
+            .send(HumanInputMiddlewareRequest {
+                candidate,
+                reply,
+                committed,
+                stored,
+            })
+            .await
+            .is_ok()
+        {
+            tokio::time::timeout(std::time::Duration::from_secs(3), response)
+                .await
+                .ok()
+                .and_then(Result::ok)
+        } else {
+            None
+        };
+        match decision.unwrap_or(HumanInputDecision::Reject) {
+            HumanInputDecision::Pass => {
+                let _ = commit_sender.send(HumanInputCommit::Pass);
+                if !matches!(storage_ack.await, Ok(true)) {
+                    return Ok(TurnInputSubmission::NotSubmitted {
+                        reason: NotSubmittedReason::InputMiddlewareUnavailable,
+                    });
+                }
+            }
+            HumanInputDecision::Replace(replacement) => {
+                if replacement.is_empty() || replacement.chars().count() > MAX_MIDDLEWARE_TEXT_CHARS
+                {
+                    return Ok(TurnInputSubmission::NotSubmitted {
+                        reason: NotSubmittedReason::InputMiddlewareUnavailable,
+                    });
+                }
+                let _ = commit_sender.send(HumanInputCommit::Replace);
+                if !matches!(storage_ack.await, Ok(true)) {
+                    return Ok(TurnInputSubmission::NotSubmitted {
+                        reason: NotSubmittedReason::InputMiddlewareUnavailable,
+                    });
+                }
+                *text = replacement;
+            }
+            HumanInputDecision::Intercept { operation_id } => {
+                let _ = commit_sender.send(HumanInputCommit::Intercept {
+                    operation_id: operation_id.clone(),
+                });
+                if !matches!(storage_ack.await, Ok(true)) {
+                    return Ok(TurnInputSubmission::NotSubmitted {
+                        reason: NotSubmittedReason::InputMiddlewareUnavailable,
+                    });
+                }
+                return Ok(TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::InputIntercepted {
+                        input_id,
+                        operation_id,
+                    },
+                });
+            }
+            HumanInputDecision::Reject => {
+                let _ = commit_sender.send(HumanInputCommit::Reject);
+                let _ = storage_ack.await;
+                return Ok(TurnInputSubmission::NotSubmitted {
+                    reason: NotSubmittedReason::InputMiddlewareUnavailable,
+                });
+            }
+        }
+    }
     match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
@@ -559,6 +705,7 @@ impl Session {
     pub(crate) async fn route_realtime_text_input(
         self: &Arc<Self>,
         text: String,
+        source_id: String,
     ) -> Result<(), &'static str> {
         let submission_id = Uuid::now_v7().to_string();
         let submission = handle(
@@ -567,6 +714,10 @@ impl Session {
                 text,
                 text_elements: Vec::new(),
             }])
+            .with_human_input_source(codex_protocol::turn_input::HumanInputSource {
+                id: source_id,
+                realtime: true,
+            })
             .on_start(TurnStartOptions {
                 turn_trigger: Some("realtime".to_string()),
                 ..Default::default()
@@ -577,6 +728,9 @@ impl Session {
         .await;
         match submission {
             Ok(TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. }) => {}
+            Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::InputIntercepted { .. },
+            }) => {}
             Ok(TurnInputSubmission::NotSubmitted {
                 reason: NotSubmittedReason::ServerDraining,
             }) => {

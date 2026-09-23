@@ -31,6 +31,7 @@ from .v2_all import GatewayOAuthChangedNotification
 from .v2_all import GuardianWarningNotification
 from .v2_all import HookCompletedNotification
 from .v2_all import HookStartedNotification
+from .v2_all import InputMiddlewareResolvedNotification
 from .v2_all import ItemCompletedNotification
 from .v2_all import ItemGuardianApprovalReviewCompletedNotification
 from .v2_all import ItemGuardianApprovalReviewStartedNotification
@@ -114,6 +115,7 @@ KnownNotificationPayload: TypeAlias = (
     | GuardianWarningNotification
     | HookCompletedNotification
     | HookStartedNotification
+    | InputMiddlewareResolvedNotification
     | ItemCompletedNotification
     | ItemGuardianApprovalReviewCompletedNotification
     | ItemGuardianApprovalReviewStartedNotification
@@ -229,6 +231,7 @@ NOTIFICATION_MODELS: dict[str, type[KnownNotificationPayload]] = {
     "thread/environment/disconnected": EnvironmentConnectionNotification,
     "thread/goal/cleared": ThreadGoalClearedNotification,
     "thread/goal/updated": ThreadGoalUpdatedNotification,
+    "thread/input/resolved": InputMiddlewareResolvedNotification,
     "thread/name/updated": ThreadNameUpdatedNotification,
     "thread/project/updated": ThreadProjectUpdatedNotification,
     "thread/queue/changed": ThreadQueueChangedNotification,
