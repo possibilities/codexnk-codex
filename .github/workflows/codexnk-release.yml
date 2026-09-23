@@ -7,7 +7,7 @@ name: codexnk-release
 on:
   push:
     branches:
-      - main
+      - integration
       - carry/invocation-axes
     tags:
       - "codexnk-v*"
