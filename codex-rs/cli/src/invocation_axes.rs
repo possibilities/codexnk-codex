@@ -9,6 +9,7 @@
 //! CLI auth and MCP OAuth credentials stay in files under the runtime home.
 
 use anyhow::Context;
+use std::collections::HashSet;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
@@ -60,7 +61,7 @@ pub fn prepare_invocation_axes(axes: &InvocationAxes) -> anyhow::Result<Prepared
     let capability_skills = capabilities.join("skills");
     let runtime_skills = codex_home.join("skills");
     if capability_skills.is_dir() {
-        copy_tree(&capability_skills, &runtime_skills)?;
+        copy_tree(&capability_skills, &runtime_skills, &mut HashSet::new())?;
     } else if capability_skills.exists() {
         anyhow::bail!(
             "--capabilities skills path {} is not a directory",
@@ -108,45 +109,28 @@ fn existing_dir(path: &Path, flag: &str) -> anyhow::Result<PathBuf> {
     Ok(canonical)
 }
 
-fn copy_tree(source: &Path, dest: &Path) -> anyhow::Result<()> {
+fn copy_tree(source: &Path, dest: &Path, ancestors: &mut HashSet<PathBuf>) -> anyhow::Result<()> {
+    let canonical = fs::canonicalize(source)
+        .with_context(|| format!("resolve skill directory {}", source.display()))?;
+    anyhow::ensure!(
+        ancestors.insert(canonical.clone()),
+        "skill directory link cycle at {}",
+        source.display()
+    );
     fs::create_dir(dest).with_context(|| format!("create {}", dest.display()))?;
     for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
         let entry = entry?;
         let from = entry.path();
         let to = dest.join(entry.file_name());
-        let metadata =
-            fs::symlink_metadata(&from).with_context(|| format!("stat {}", from.display()))?;
-        if metadata.file_type().is_symlink() {
-            let target =
-                fs::read_link(&from).with_context(|| format!("read link {}", from.display()))?;
-            let directory = fs::metadata(&from).is_ok_and(|meta| meta.is_dir());
-            symlink_path(&target, &to, directory)?;
-        } else if metadata.is_dir() {
-            copy_tree(&from, &to)?;
+        let metadata = fs::metadata(&from).with_context(|| format!("stat {}", from.display()))?;
+        if metadata.is_dir() {
+            copy_tree(&from, &to, ancestors)?;
         } else {
             fs::copy(&from, &to)
                 .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
         }
     }
-    Ok(())
-}
-
-fn symlink_path(target: &Path, link: &Path, directory: bool) -> anyhow::Result<()> {
-    #[cfg(unix)]
-    {
-        let _ = directory;
-        std::os::unix::fs::symlink(target, link)
-            .with_context(|| format!("link {} to {}", link.display(), target.display()))?;
-    }
-    #[cfg(windows)]
-    {
-        if directory {
-            std::os::windows::fs::symlink_dir(target, link)
-        } else {
-            std::os::windows::fs::symlink_file(target, link)
-        }
-        .with_context(|| format!("link {} to {}", link.display(), target.display()))?;
-    }
+    ancestors.remove(&canonical);
     Ok(())
 }
 
