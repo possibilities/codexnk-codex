@@ -3,9 +3,10 @@
 //!
 //! Absent flags leave Codex on its normal `CODEX_HOME`. When all three are
 //! present, this prepares a private runtime directory and points `CODEX_HOME`
-//! at it. Sessions are linked from the history directory, user skills and the
-//! selected MCP/prompt inputs come from the capabilities directory, and
-//! `auth.json` is copied from the identity directory.
+//! at it. Sessions are linked from the history directory. Skills are copied
+//! from the capabilities directory, MCP servers and the prompt append are
+//! read from there, and `auth.json` is copied from the identity directory.
+//! CLI auth and MCP OAuth credentials stay in files under the runtime home.
 
 use anyhow::Context;
 use std::fs;
@@ -57,16 +58,16 @@ pub fn prepare_invocation_axes(axes: &InvocationAxes) -> anyhow::Result<Prepared
     )?;
 
     let capability_skills = capabilities.join("skills");
+    let runtime_skills = codex_home.join("skills");
     if capability_skills.is_dir() {
-        symlink_dir(&capability_skills, &codex_home.join("skills"))?;
+        copy_tree(&capability_skills, &runtime_skills)?;
     } else if capability_skills.exists() {
         anyhow::bail!(
             "--capabilities skills path {} is not a directory",
             capability_skills.display()
         );
     } else {
-        fs::create_dir(codex_home.join("skills"))
-            .context("create empty runtime skills directory")?;
+        fs::create_dir(&runtime_skills).context("create empty runtime skills directory")?;
     }
 
     let auth_source = identity.join("auth.json");
@@ -107,6 +108,48 @@ fn existing_dir(path: &Path, flag: &str) -> anyhow::Result<PathBuf> {
     Ok(canonical)
 }
 
+fn copy_tree(source: &Path, dest: &Path) -> anyhow::Result<()> {
+    fs::create_dir(dest).with_context(|| format!("create {}", dest.display()))?;
+    for entry in fs::read_dir(source).with_context(|| format!("read {}", source.display()))? {
+        let entry = entry?;
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+        let metadata =
+            fs::symlink_metadata(&from).with_context(|| format!("stat {}", from.display()))?;
+        if metadata.file_type().is_symlink() {
+            let target =
+                fs::read_link(&from).with_context(|| format!("read link {}", from.display()))?;
+            let directory = fs::metadata(&from).is_ok_and(|meta| meta.is_dir());
+            symlink_path(&target, &to, directory)?;
+        } else if metadata.is_dir() {
+            copy_tree(&from, &to)?;
+        } else {
+            fs::copy(&from, &to)
+                .with_context(|| format!("copy {} to {}", from.display(), to.display()))?;
+        }
+    }
+    Ok(())
+}
+
+fn symlink_path(target: &Path, link: &Path, directory: bool) -> anyhow::Result<()> {
+    #[cfg(unix)]
+    {
+        let _ = directory;
+        std::os::unix::fs::symlink(target, link)
+            .with_context(|| format!("link {} to {}", link.display(), target.display()))?;
+    }
+    #[cfg(windows)]
+    {
+        if directory {
+            std::os::windows::fs::symlink_dir(target, link)
+        } else {
+            std::os::windows::fs::symlink_file(target, link)
+        }
+        .with_context(|| format!("link {} to {}", link.display(), target.display()))?;
+    }
+    Ok(())
+}
+
 fn symlink_dir(target: &Path, link: &Path) -> anyhow::Result<()> {
     #[cfg(unix)]
     {
@@ -125,6 +168,10 @@ fn write_runtime_config(capabilities: &Path, codex_home: &Path) -> anyhow::Resul
     let mut table = toml::map::Map::new();
     table.insert(
         "cli_auth_credentials_store".to_string(),
+        toml::Value::String("file".to_string()),
+    );
+    table.insert(
+        "mcp_oauth_credentials_store".to_string(),
         toml::Value::String("file".to_string()),
     );
 

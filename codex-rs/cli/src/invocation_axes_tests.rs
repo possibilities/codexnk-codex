@@ -90,14 +90,39 @@ fn axes_share_history_and_keep_identity_and_capabilities_apart() {
     let config_a = fs::read_to_string(prepared_a.codex_home.join("config.toml")).expect("config a");
     assert!(config_a.contains("alpha prompt"));
     assert!(config_a.contains("[mcp_servers.alpha]"));
+    assert!(config_a.contains("cli_auth_credentials_store = \"file\""));
+    assert!(config_a.contains("mcp_oauth_credentials_store = \"file\""));
     assert!(!config_a.contains("not-copied"));
     let config_b = fs::read_to_string(prepared_b.codex_home.join("config.toml")).expect("config b");
     assert!(config_b.contains("beta prompt"));
     assert!(!config_b.contains("mcp_servers"));
 
+    let runtime_skill = prepared_a.codex_home.join("skills").join("from-a.txt");
+    assert!(
+        !runtime_skill
+            .symlink_metadata()
+            .expect("skill metadata")
+            .file_type()
+            .is_symlink()
+    );
     assert_eq!(
-        fs::read_to_string(prepared_a.codex_home.join("skills").join("from-a.txt")).expect("skill"),
+        fs::read_to_string(&runtime_skill).expect("skill"),
         "skill-a"
+    );
+    fs::write(
+        prepared_a
+            .codex_home
+            .join("skills")
+            .join("runtime-only.txt"),
+        "no-writeback",
+    )
+    .expect("write runtime skill");
+    assert!(
+        !capabilities_a
+            .path()
+            .join("skills")
+            .join("runtime-only.txt")
+            .exists()
     );
     assert!(
         !prepared_b
