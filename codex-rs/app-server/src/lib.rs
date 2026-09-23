@@ -120,6 +120,7 @@ mod fuzzy_file_search;
 mod gateway_oauth_notifications;
 mod image_url;
 pub mod in_process;
+mod input_middleware_journal;
 mod log_write_warning;
 mod mcp_refresh;
 mod message_processor;

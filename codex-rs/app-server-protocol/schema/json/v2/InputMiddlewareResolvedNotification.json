@@ -1,0 +1,128 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InputMiddlewareDisposition": {
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "passed"
+              ],
+              "title": "PassedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "PassedInputMiddlewareDisposition",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "replaced"
+              ],
+              "title": "ReplacedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "ReplacedInputMiddlewareDisposition",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "operationId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "intercepted"
+              ],
+              "title": "InterceptedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "type"
+          ],
+          "title": "InterceptedInputMiddlewareDisposition",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "rejected"
+              ],
+              "title": "RejectedInputMiddlewareDispositionType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "RejectedInputMiddlewareDisposition",
+          "type": "object"
+        }
+      ]
+    },
+    "InputMiddlewareEffectReceipt": {
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/InputMiddlewareEffectStatus"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "InputMiddlewareEffectStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "unknown"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "disposition": {
+      "$ref": "#/definitions/InputMiddlewareDisposition"
+    },
+    "effect": {
+      "anyOf": [
+        {
+          "$ref": "#/definitions/InputMiddlewareEffectReceipt"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inputId": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "disposition",
+    "inputId",
+    "threadId"
+  ],
+  "title": "InputMiddlewareResolvedNotification",
+  "type": "object"
+}

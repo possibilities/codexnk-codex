@@ -1994,6 +1994,15 @@ async fn handle_server_request(
 ) {
     let method = server_request_method_name(&request);
     let handle_result = match request {
+        ServerRequest::InputMiddlewareRequest { request_id, .. } => {
+            reject_server_request(
+                client,
+                request_id,
+                &method,
+                "input middleware is not supported in exec mode".to_string(),
+            )
+            .await
+        }
         ServerRequest::McpServerElicitationRequest { request_id, .. } => {
             // Exec auto-cancels elicitation instead of surfacing it
             // interactively. Preserve that behavior for attached subagent
