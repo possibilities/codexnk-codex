@@ -136,6 +136,57 @@ fn axes_share_history_and_keep_identity_and_capabilities_apart() {
     cleanup_runtime(&prepared_b.codex_home);
 }
 
+#[cfg(unix)]
+#[test]
+fn linked_skills_are_copied_without_retaining_links_to_capabilities() {
+    use std::os::unix::fs::symlink;
+
+    let identity = tempfile::tempdir().expect("identity");
+    let capabilities = tempfile::tempdir().expect("capabilities");
+    let history = tempfile::tempdir().expect("history");
+    let source = tempfile::tempdir().expect("skill source");
+    let source_skill = source.path().join("shared");
+    fs::create_dir(&source_skill).expect("source skill directory");
+    fs::write(source_skill.join("SKILL.md"), "original").expect("source skill");
+    let skills = capabilities.path().join("skills");
+    fs::create_dir(&skills).expect("skills directory");
+    symlink(&source_skill, skills.join("linked-skill")).expect("linked skill directory");
+
+    let prepared = prepare_invocation_axes(&InvocationAxes {
+        identity: identity.path().to_path_buf(),
+        capabilities: capabilities.path().to_path_buf(),
+        history: history.path().to_path_buf(),
+    })
+    .expect("prepare");
+    let copied_skill = prepared.codex_home.join("skills/linked-skill/SKILL.md");
+    assert_eq!(
+        fs::read_to_string(&copied_skill).expect("copied skill"),
+        "original"
+    );
+    assert!(
+        !prepared
+            .codex_home
+            .join("skills/linked-skill")
+            .symlink_metadata()
+            .expect("copied skill metadata")
+            .file_type()
+            .is_symlink()
+    );
+
+    fs::write(source_skill.join("SKILL.md"), "changed at source").expect("update source");
+    assert_eq!(
+        fs::read_to_string(&copied_skill).expect("stable copy"),
+        "original"
+    );
+    fs::write(&copied_skill, "changed at runtime").expect("update runtime");
+    assert_eq!(
+        fs::read_to_string(source_skill.join("SKILL.md")).expect("stable source"),
+        "changed at source"
+    );
+
+    cleanup_runtime(&prepared.codex_home);
+}
+
 fn cleanup_runtime(codex_home: &Path) {
     for name in ["sessions", "archived_sessions", "skills"] {
         let path = codex_home.join(name);
