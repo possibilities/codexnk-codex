@@ -64,6 +64,15 @@ pub struct TurnInputRequest {
     pub additional_context: BTreeMap<String, AdditionalContextEntry>,
     pub responsesapi_client_metadata: ResponsesApiClientMetadataUpdate,
     pub trace: Option<W3cTraceContext>,
+    /// Explicit human input offered by a client or the realtime handoff path.
+    /// Internal and delegated inputs do not set this field.
+    pub human_input_source: Option<HumanInputSource>,
+}
+
+#[derive(Clone, Debug)]
+pub struct HumanInputSource {
+    pub id: String,
+    pub realtime: bool,
 }
 
 /// An optional replacement followed by a patch to the turn's client metadata.
@@ -121,6 +130,7 @@ impl TurnInputRequest {
             additional_context: BTreeMap::new(),
             responsesapi_client_metadata: ResponsesApiClientMetadataUpdate::default(),
             trace: None,
+            human_input_source: None,
         }
     }
 
@@ -179,6 +189,11 @@ impl TurnInputRequest {
     /// Trace context used when this request crosses the session loop.
     pub fn with_trace(mut self, trace: Option<W3cTraceContext>) -> Self {
         self.trace = trace;
+        self
+    }
+
+    pub fn with_human_input_source(mut self, source: HumanInputSource) -> Self {
+        self.human_input_source = Some(source);
         self
     }
 }
@@ -285,6 +300,15 @@ pub enum SteerSubmission {
 /// Why Core did not accept submitted turn input for turn processing.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum NotSubmittedReason {
+    /// The middleware claimed this exact human input; no turn was created or steered.
+    InputIntercepted {
+        input_id: String,
+        operation_id: String,
+    },
+    /// The configured strict middleware policy could not decide this input.
+    InputMiddlewareUnavailable,
+    /// This source identity was already offered to the middleware.
+    DuplicateHumanInput { input_id: String },
     /// New work superseded the expected previous turn of an internal continuation.
     Superseded,
 
