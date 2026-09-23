@@ -146,12 +146,17 @@ impl RealtimeHandoffAdmission {
         }
     }
 
-    async fn route(&self, session: &Arc<Session>, text: String) -> Result<(), &'static str> {
+    async fn route(
+        &self,
+        session: &Arc<Session>,
+        text: String,
+        source_id: String,
+    ) -> Result<(), &'static str> {
         let Ok(_permit) = self.gate.acquire().await else {
             return Ok(());
         };
         if !self.retired.load(Ordering::Acquire) {
-            session.route_realtime_text_input(text).await?;
+            session.route_realtime_text_input(text, source_id).await?;
         }
         Ok(())
     }
@@ -1719,14 +1724,22 @@ async fn handle_start_inner(
             }
             let maybe_routed_text = match &event {
                 RealtimeEvent::HandoffRequested(handoff) => {
-                    realtime_delegation_from_handoff(handoff)
+                    realtime_delegation_from_handoff(handoff).map(|text| {
+                        (
+                            text,
+                            format!("{}:{}:{}", sub_id, handoff.item_id, handoff.handoff_id),
+                        )
+                    })
                 }
                 _ => None,
             };
-            if let Some(text) = maybe_routed_text {
+            if let Some((text, source_id)) = maybe_routed_text {
                 // The routed text can contain spoken prompts or workspace secrets.
                 debug!("[realtime-text] realtime conversation text output");
-                handoff_error = route_handoffs.route(&sess_clone, text).await.err();
+                handoff_error = route_handoffs
+                    .route(&sess_clone, text, source_id)
+                    .await
+                    .err();
             }
             sess_clone
                 .send_event_raw(ev(EventMsg::RealtimeConversationRealtime(
@@ -1742,7 +1755,10 @@ async fn handle_start_inner(
         if handoff_error.is_none()
             && let Ok(text) = transcript_tail_rx.recv().await
         {
-            handoff_error = route_handoffs.route(&sess_clone, text).await.err();
+            handoff_error = route_handoffs
+                .route(&sess_clone, text, format!("{sub_id}:tail"))
+                .await
+                .err();
         }
         if let Some(error) = handoff_error {
             end = RealtimeConversationEnd::Error;

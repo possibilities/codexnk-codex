@@ -4,6 +4,26 @@ use codex_agent_extension::AgentInvocation;
 use codex_agent_extension::AgentRun;
 use codex_agent_extension::AgentRunner;
 use codex_app_server_protocol::ImageReference as V2ImageReference;
+use codex_app_server_protocol::InputMiddlewareAttachParams;
+use codex_app_server_protocol::InputMiddlewareAttachResponse;
+use codex_app_server_protocol::InputMiddlewareCompleteParams;
+use codex_app_server_protocol::InputMiddlewareCompleteResponse;
+use codex_app_server_protocol::InputMiddlewareDetachParams;
+use codex_app_server_protocol::InputMiddlewareDetachResponse;
+use codex_app_server_protocol::InputMiddlewareDisposition;
+use codex_app_server_protocol::InputMiddlewareOrigin;
+use codex_app_server_protocol::InputMiddlewareReadParams;
+use codex_app_server_protocol::InputMiddlewareReadResponse;
+use codex_app_server_protocol::InputMiddlewareRecord;
+use codex_app_server_protocol::InputMiddlewareRequestParams;
+use codex_app_server_protocol::InputMiddlewareRequestResponse;
+use codex_app_server_protocol::InputMiddlewareResolvedNotification;
+use codex_app_server_protocol::InputMiddlewareUnavailablePolicy;
+use codex_app_server_protocol::ServerNotification;
+use codex_app_server_protocol::ServerRequestPayload;
+use codex_core::HumanInputCommit;
+use codex_core::HumanInputDecision;
+use codex_core::HumanInputOrigin;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -18,6 +38,8 @@ use codex_skills::system_cache_root_dir;
 
 use crate::image_url::REMOTE_IMAGE_URL_ERROR;
 use crate::image_url::is_remote_image_url;
+
+type MiddlewareOwner = (ConnectionId, std::sync::Weak<CodexThread>);
 
 pub(super) fn validate_user_input_image_urls(
     input: &[V2UserInput],
@@ -91,6 +113,9 @@ pub(crate) struct TurnRequestProcessor {
     thread_watch_manager: ThreadWatchManager,
     skills_watcher: Arc<SkillsWatcher>,
     turn_cost_worker: Option<crate::turn_cost_worker::TurnCostWorkerHandle>,
+    middleware_owners: Arc<Mutex<HashMap<ThreadId, MiddlewareOwner>>>,
+    middleware_resolutions: Arc<Mutex<HashMap<ThreadId, HashMap<String, InputMiddlewareRecord>>>>,
+    middleware_journals: Arc<Mutex<HashMap<ThreadId, std::path::PathBuf>>>,
 }
 
 fn map_additional_context(
@@ -168,7 +193,337 @@ impl TurnRequestProcessor {
             thread_watch_manager,
             skills_watcher,
             turn_cost_worker,
+            middleware_owners: Arc::new(Mutex::new(HashMap::new())),
+            middleware_resolutions: Arc::new(Mutex::new(HashMap::new())),
+            middleware_journals: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "one owner claim and journal replay must be atomic with registration"
+    )]
+    pub(crate) async fn input_middleware_attach(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: InputMiddlewareAttachParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        if !(100..=2000).contains(&params.timeout_ms) {
+            return Err(invalid_request("timeoutMs must be between 100 and 2000"));
+        }
+        let (thread_id, thread) = self.load_thread(&params.thread_id).await?;
+        self.ensure_direct_input_allowed(request_id, thread.as_ref())
+            .await?;
+        let owner = request_id.connection_id;
+        let mut owners = self.middleware_owners.lock().await;
+        owners.retain(|_, (_, thread)| thread.strong_count() > 0);
+        if owners.contains_key(&thread_id) {
+            return Err(invalid_request(
+                "human-input middleware already has an owner",
+            ));
+        }
+        thread.checkpoint_preparation().await.map_err(|error| {
+            internal_error(format!(
+                "cannot persist middleware thread preparation: {error}"
+            ))
+        })?;
+        thread.ensure_rollout_materialized().await;
+        thread.flush_rollout().await.map_err(|error| {
+            internal_error(format!("cannot flush middleware thread history: {error}"))
+        })?;
+        let rollout = thread
+            .rollout_path()
+            .ok_or_else(|| invalid_request("input middleware requires retained thread history"))?;
+        let journal = crate::input_middleware_journal::path_for_rollout(&rollout, thread_id)
+            .map_err(|error| {
+                invalid_request(format!(
+                    "input middleware history path unavailable: {error}"
+                ))
+            })?;
+        let mut resolutions_guard = self.middleware_resolutions.lock().await;
+        let records = crate::input_middleware_journal::load(journal.clone())
+            .await
+            .map_err(|error| {
+                internal_error(format!("cannot read input middleware journal: {error}"))
+            })?;
+        if records
+            .values()
+            .any(|record| record.thread_id != thread_id.to_string())
+            || !thread
+                .seed_human_input_ids(records.keys().cloned().collect())
+                .await
+        {
+            return Err(invalid_request(
+                "input middleware journal has invalid thread identity or capacity",
+            ));
+        }
+        resolutions_guard.insert(thread_id, records);
+        drop(resolutions_guard);
+        self.middleware_journals
+            .lock()
+            .await
+            .insert(thread_id, journal.clone());
+        let (sender, mut receiver) =
+            tokio::sync::mpsc::channel::<codex_core::HumanInputMiddlewareRequest>(16);
+        thread.set_human_input_middleware(Some(sender));
+        owners.insert(thread_id, (owner, Arc::downgrade(&thread)));
+        drop(owners);
+        let outgoing = Arc::clone(&self.outgoing);
+        let resolutions = Arc::clone(&self.middleware_resolutions);
+        let timeout_ms = params.timeout_ms;
+        let fail_open = params.on_unavailable == InputMiddlewareUnavailablePolicy::Pass;
+        tokio::spawn(async move {
+            while let Some(request) = receiver.recv().await {
+                let candidate = request.candidate;
+                let input_id = candidate.input_id.clone();
+                let original_text = candidate.text.clone();
+                let payload = InputMiddlewareRequestParams {
+                    thread_id: candidate.thread_id.to_string(),
+                    input_id: candidate.input_id,
+                    origin: match candidate.origin {
+                        HumanInputOrigin::Client => InputMiddlewareOrigin::Client,
+                        HumanInputOrigin::Realtime => InputMiddlewareOrigin::Realtime,
+                    },
+                    text: candidate.text,
+                };
+                let (server_request_id, answer) = outgoing
+                    .send_request_to_connections(
+                        Some(&[owner]),
+                        ServerRequestPayload::InputMiddlewareRequest(payload),
+                        Some(thread_id),
+                    )
+                    .await;
+                let decision = match tokio::time::timeout(
+                    std::time::Duration::from_millis(u64::from(timeout_ms)),
+                    answer,
+                )
+                .await
+                {
+                    Ok(Ok(Ok(value))) => {
+                        match serde_json::from_value::<InputMiddlewareRequestResponse>(value) {
+                            Ok(InputMiddlewareRequestResponse::Pass) => HumanInputDecision::Pass,
+                            Ok(InputMiddlewareRequestResponse::Replace { text }) => {
+                                HumanInputDecision::Replace(text)
+                            }
+                            Ok(InputMiddlewareRequestResponse::Intercept { operation_id })
+                                if !operation_id.is_empty() =>
+                            {
+                                HumanInputDecision::Intercept { operation_id }
+                            }
+                            _ if fail_open => HumanInputDecision::Pass,
+                            _ => HumanInputDecision::Reject,
+                        }
+                    }
+                    _ if fail_open => HumanInputDecision::Pass,
+                    _ => HumanInputDecision::Reject,
+                };
+                outgoing.cancel_request(&server_request_id).await;
+                let selected_text = match &decision {
+                    HumanInputDecision::Pass => Some(original_text.clone()),
+                    HumanInputDecision::Replace(text) => Some(text.clone()),
+                    HumanInputDecision::Intercept { .. } | HumanInputDecision::Reject => None,
+                };
+                let _ = request.reply.send(decision);
+                if let Ok(commit) = request.committed.await {
+                    let disposition = match commit {
+                        HumanInputCommit::Pass => InputMiddlewareDisposition::Passed,
+                        HumanInputCommit::Replace => InputMiddlewareDisposition::Replaced,
+                        HumanInputCommit::Intercept { operation_id } => {
+                            InputMiddlewareDisposition::Intercepted { operation_id }
+                        }
+                        HumanInputCommit::Reject => InputMiddlewareDisposition::Rejected,
+                    };
+                    let resolved = InputMiddlewareResolvedNotification {
+                        thread_id: thread_id.to_string(),
+                        input_id: input_id.clone(),
+                        disposition,
+                        effect: None,
+                    };
+                    let record = InputMiddlewareRecord {
+                        thread_id: resolved.thread_id.clone(),
+                        input_id: resolved.input_id.clone(),
+                        original_text,
+                        selected_text,
+                        disposition: resolved.disposition.clone(),
+                        effect: None,
+                    };
+                    let mut resolutions_guard = resolutions.lock().await;
+                    if let Err(error) =
+                        crate::input_middleware_journal::append(journal.clone(), &record).await
+                    {
+                        tracing::error!(?error, "failed to persist input middleware resolution");
+                        let _ = request.stored.send(false);
+                        continue;
+                    }
+                    resolutions_guard
+                        .entry(thread_id)
+                        .or_default()
+                        .insert(input_id, record);
+                    drop(resolutions_guard);
+                    let _ = request.stored.send(true);
+                    outgoing
+                        .send_server_notification_to_connections(
+                            &[owner],
+                            ServerNotification::InputMiddlewareResolved(resolved),
+                        )
+                        .await;
+                }
+            }
+        });
+        Ok(Some(
+            InputMiddlewareAttachResponse {
+                thread_id: thread_id.to_string(),
+                owner_id: format!("{}", owner.0),
+            }
+            .into(),
+        ))
+    }
+
+    pub(crate) async fn input_middleware_connection_closed(&self, connection_id: ConnectionId) {
+        let mut owners = self.middleware_owners.lock().await;
+        owners.retain(|_, (owner, _thread)| {
+            if *owner == connection_id {
+                // Keep the registered policy active until an owner reattaches.
+                // Clearing Core here would silently turn strict rejection into pass-through.
+                false
+            } else {
+                true
+            }
+        });
+    }
+
+    pub(crate) async fn input_middleware_detach(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: InputMiddlewareDetachParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::try_from(params.thread_id.as_str())
+            .map_err(|_| invalid_request("invalid threadId"))?;
+        let mut owners = self.middleware_owners.lock().await;
+        let Some((owner, thread)) = owners.get(&thread_id) else {
+            return Err(invalid_request("input middleware is not attached"));
+        };
+        if *owner != request_id.connection_id || params.owner_id != owner.0.to_string() {
+            return Err(invalid_request("input middleware owner required"));
+        }
+        if let Some(thread) = thread.upgrade() {
+            thread.set_human_input_middleware(None);
+        }
+        owners.remove(&thread_id);
+        Ok(Some(InputMiddlewareDetachResponse::default().into()))
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "owner check and private record lookup retain the same connection authority"
+    )]
+    pub(crate) async fn input_middleware_read(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: InputMiddlewareReadParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::try_from(params.thread_id.as_str())
+            .map_err(|_| invalid_request("invalid threadId"))?;
+        let owners = self.middleware_owners.lock().await;
+        if !owners
+            .get(&thread_id)
+            .is_some_and(|(owner, _)| *owner == request_id.connection_id)
+        {
+            return Err(invalid_request("input middleware owner required"));
+        }
+        drop(owners);
+        let record = self
+            .middleware_resolutions
+            .lock()
+            .await
+            .get(&thread_id)
+            .and_then(|records| records.get(&params.input_id))
+            .cloned();
+        Ok(Some(InputMiddlewareReadResponse { record }.into()))
+    }
+
+    #[expect(
+        clippy::await_holding_invalid_type,
+        reason = "effect journal append and resolution update must be serialized"
+    )]
+    pub(crate) async fn input_middleware_complete(
+        &self,
+        request_id: &ConnectionRequestId,
+        params: InputMiddlewareCompleteParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::try_from(params.thread_id.as_str())
+            .map_err(|_| invalid_request("invalid threadId"))?;
+        let owners = self.middleware_owners.lock().await;
+        if !owners
+            .get(&thread_id)
+            .is_some_and(|(owner, _)| *owner == request_id.connection_id)
+        {
+            return Err(invalid_request("input middleware owner required"));
+        }
+        drop(owners);
+        if params.receipt.summary.chars().count() > 1024 {
+            return Err(invalid_request("effect receipt summary too long"));
+        }
+        let mut resolutions = self.middleware_resolutions.lock().await;
+        let resolved = resolutions
+            .get_mut(&thread_id)
+            .and_then(|records| records.get_mut(&params.input_id))
+            .ok_or_else(|| invalid_request("input resolution not found"))?;
+        if !matches!(&resolved.disposition, InputMiddlewareDisposition::Intercepted { operation_id } if operation_id == &params.operation_id)
+        {
+            return Err(invalid_request(
+                "input was not intercepted by this operation",
+            ));
+        }
+        let first_receipt = resolved.effect.is_none();
+        if let Some(existing) = &resolved.effect {
+            if existing != &params.receipt {
+                return Err(invalid_request(
+                    "effect receipt conflicts with recorded outcome",
+                ));
+            }
+        } else {
+            let mut updated = resolved.clone();
+            updated.effect = Some(params.receipt);
+            let journal = self
+                .middleware_journals
+                .lock()
+                .await
+                .get(&thread_id)
+                .cloned()
+                .ok_or_else(|| invalid_request("input middleware journal unavailable"))?;
+            crate::input_middleware_journal::append(journal, &updated)
+                .await
+                .map_err(|error| {
+                    internal_error(format!("cannot persist input middleware effect: {error}"))
+                })?;
+            *resolved = updated;
+        }
+        let record = InputMiddlewareRecord {
+            thread_id: resolved.thread_id.clone(),
+            input_id: resolved.input_id.clone(),
+            original_text: resolved.original_text.clone(),
+            selected_text: resolved.selected_text.clone(),
+            disposition: resolved.disposition.clone(),
+            effect: resolved.effect.clone(),
+        };
+        drop(resolutions);
+        if first_receipt {
+            self.outgoing
+                .send_server_notification_to_connections(
+                    &[request_id.connection_id],
+                    ServerNotification::InputMiddlewareResolved(
+                        InputMiddlewareResolvedNotification {
+                            thread_id: record.thread_id.clone(),
+                            input_id: record.input_id.clone(),
+                            disposition: record.disposition.clone(),
+                            effect: record.effect.clone(),
+                        },
+                    ),
+                )
+                .await;
+        }
+        Ok(Some(InputMiddlewareCompleteResponse { record }.into()))
     }
 
     pub(crate) async fn turn_start(
@@ -648,9 +1003,22 @@ impl TurnRequestProcessor {
             )
             .await?;
 
+        let human_source = match &input {
+            TurnInput::UserInput { client_id, .. } => {
+                Some(codex_protocol::turn_input::HumanInputSource {
+                    id: client_id.clone().unwrap_or_default(),
+                    realtime: false,
+                })
+            }
+            _ => None,
+        };
+        let mut turn_request = TurnInputRequest::new(input);
+        if let Some(source) = human_source {
+            turn_request = turn_request.with_human_input_source(source);
+        }
         let submission = thread
             .start_or_steer_turn(
-                TurnInputRequest::new(input)
+                turn_request
                     .with_thread_settings(thread_settings)
                     .on_start(TurnStartOptions {
                         turn_trigger: params.turn_trigger,
@@ -673,10 +1041,21 @@ impl TurnRequestProcessor {
             TurnInputSubmission::Started { turn_id } => (turn_id, true),
             TurnInputSubmission::Steered { turn_id } => (turn_id, false),
             TurnInputSubmission::NotSubmitted { reason } => {
-                let error = if reason == NotSubmittedReason::ServerDraining {
-                    crate::error_code::server_draining_error()
-                } else {
-                    internal_error(format!("failed to submit turn input: {reason:?}"))
+                let error = match reason {
+                    NotSubmittedReason::ServerDraining => {
+                        crate::error_code::server_draining_error()
+                    }
+                    NotSubmittedReason::InputIntercepted {
+                        input_id,
+                        operation_id,
+                    } => invalid_request(format!("input intercepted: {input_id} ({operation_id})")),
+                    NotSubmittedReason::InputMiddlewareUnavailable => {
+                        invalid_request("input middleware unavailable or input not eligible")
+                    }
+                    NotSubmittedReason::DuplicateHumanInput { input_id } => {
+                        invalid_request(format!("human input already offered: {input_id}"))
+                    }
+                    reason => internal_error(format!("failed to submit turn input: {reason:?}")),
                 };
                 self.track_error_response(&request_id, &error, /*error_type*/ None);
                 return Err(error);
@@ -1062,7 +1441,11 @@ impl TurnRequestProcessor {
             .steer_turn(
                 TurnInputRequest::new(TurnInput::UserInput {
                     content: mapped_items,
-                    client_id: params.client_user_message_id,
+                    client_id: params.client_user_message_id.clone(),
+                })
+                .with_human_input_source(codex_protocol::turn_input::HumanInputSource {
+                    id: params.client_user_message_id.clone().unwrap_or_default(),
+                    realtime: false,
                 })
                 .with_additional_context(additional_context)
                 .with_responses_metadata(params.responsesapi_client_metadata),
@@ -1134,6 +1517,24 @@ impl TurnRequestProcessor {
                         "input must not be empty".to_string(),
                         None,
                         Some(AnalyticsJsonRpcError::Input(InputError::Empty)),
+                    ),
+                    NotSubmittedReason::InputIntercepted {
+                        input_id,
+                        operation_id,
+                    } => (
+                        format!("input intercepted: {input_id} ({operation_id})"),
+                        None,
+                        None,
+                    ),
+                    NotSubmittedReason::InputMiddlewareUnavailable => (
+                        "input middleware unavailable or input not eligible".to_string(),
+                        None,
+                        None,
+                    ),
+                    NotSubmittedReason::DuplicateHumanInput { input_id } => (
+                        format!("human input already offered: {input_id}"),
+                        None,
+                        None,
                     ),
                     NotSubmittedReason::ActiveTurnOutputSchemaMismatch => (
                         "active turn uses a different output schema".to_string(),

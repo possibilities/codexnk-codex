@@ -852,6 +852,36 @@
         }
       ]
     },
+    "InputMiddlewareOrigin": {
+      "enum": [
+        "client",
+        "realtime"
+      ],
+      "type": "string"
+    },
+    "InputMiddlewareRequestParams": {
+      "properties": {
+        "inputId": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/definitions/InputMiddlewareOrigin"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputId",
+        "origin",
+        "text",
+        "threadId"
+      ],
+      "type": "object"
+    },
     "LegacyAppPathString": {
       "type": "string"
     },
@@ -1843,7 +1873,32 @@
   "description": "Request initiated from the server and sent to the client.",
   "oneOf": [
     {
-      "description": "NEW APIs Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
+      "description": "NEW APIs",
+      "properties": {
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "enum": [
+            "thread/input/requestDisposition"
+          ],
+          "title": "Thread/input/requestDispositionRequestMethod",
+          "type": "string"
+        },
+        "params": {
+          "$ref": "#/definitions/InputMiddlewareRequestParams"
+        }
+      },
+      "required": [
+        "id",
+        "method",
+        "params"
+      ],
+      "title": "Thread/input/requestDispositionRequest",
+      "type": "object"
+    },
+    {
+      "description": "Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
       "properties": {
         "id": {
           "$ref": "#/definitions/RequestId"

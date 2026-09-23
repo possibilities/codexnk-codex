@@ -213,6 +213,32 @@ pub struct BackgroundTerminalInfo {
 /// Conduit for the bidirectional stream of messages that compose a thread
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
+    /// Installs or removes the app-server's single human-input owner for this loaded thread.
+    /// A disconnected receiver cannot keep Core waiting indefinitely.
+    pub fn set_human_input_middleware(
+        &self,
+        sender: Option<tokio::sync::mpsc::Sender<crate::HumanInputMiddlewareRequest>>,
+    ) {
+        *self
+            .session
+            .human_input_middleware
+            .write()
+            .expect("human-input middleware lock poisoned") = sender;
+    }
+
+    /// Rehydrates source identities durably recorded by the app-server before
+    /// activating the middleware on a resumed thread.
+    pub async fn seed_human_input_ids(&self, ids: Vec<String>) -> bool {
+        let mut seen = self.session.admitted_human_inputs.lock().await;
+        let new_ids = ids.iter().filter(|id| !seen.contains(*id)).count();
+        if ids.len() > crate::input_middleware::MAX_MIDDLEWARE_INPUTS
+            || seen.len() + new_ids > crate::input_middleware::MAX_MIDDLEWARE_INPUTS
+        {
+            return false;
+        }
+        seen.extend(ids);
+        true
+    }
     pub(crate) fn new(
         session: Arc<Session>,
         io: SessionIo,
