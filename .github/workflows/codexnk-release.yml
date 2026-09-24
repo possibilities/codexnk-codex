@@ -1,4 +1,4 @@
-# codexnk CI. Tests the invocation-axes patch and, on a codexnk-v* tag,
+# codexnk CI. Tests the invocation-axes carry and, on a codexnk-v* tag,
 # builds release binaries. Upstream workflows in this tree stay disabled
 # on the public repo; openai/codex covers code this patch does not change.
 
@@ -45,7 +45,13 @@ jobs:
         shell: bash
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-        run: just test -p codex-cli invocation_axes
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          just test -p codex-cli invocation_axes
+          just test -p codex-config scoped_capabilities_keep_trusted_project_mcp_without_home_config
+          just test -p codex-skills-extension scoped_capabilities_keep_project_skills_without_home_skills
+          just test -p codex-core-plugins scoped_capabilities_omit_home_marketplace_but_keep_project_marketplace
 
   build:
     name: Build ${{ matrix.target }}
