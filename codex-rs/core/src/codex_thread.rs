@@ -166,8 +166,6 @@ pub use codex_guardian_context::GuardianRootMessage;
 pub struct GuardianAuthorizationVersion {
     /// User-message/reset revision, preserved across compaction and internal context.
     pub user_message_revision: u64,
-    /// Successful host answers captured by the temporary legacy path.
-    pub user_input_response_count: usize,
     /// False when required retained answers or root instructions are unavailable.
     pub retained_context_complete: bool,
 }
@@ -177,6 +175,8 @@ pub struct GuardianAuthorizationVersion {
 pub struct GuardianRootSnapshot {
     /// Authoritative root from which this evidence was captured.
     pub root_thread_id: ThreadId,
+    /// Distinguishes a history reset from additional authorization in the same history.
+    pub(crate) history_reset_version: u64,
     pub authorization_version: GuardianAuthorizationVersion,
     pub messages: Vec<GuardianRootMessage>,
     pub trusted_skill_paths: Vec<String>,
@@ -239,6 +239,13 @@ impl CodexThread {
     /// Returns the session telemetry handle for thread-scoped production instrumentation.
     pub fn session_telemetry(&self) -> SessionTelemetry {
         self.session.services.session_telemetry.clone()
+    }
+
+    /// Schedule the same background model warmup used at startup for an idle thread.
+    /// The next turn consumes the warmup through the existing startup handoff.
+    /// Call after installing host services such as the thread's attestation routing.
+    pub async fn prewarm(&self) {
+        self.session.schedule_startup_prewarm().await;
     }
 
     /// Whether analytics is enabled for this thread after configuration and host overrides.
@@ -527,6 +534,17 @@ impl CodexThread {
         self.session.inject_if_running(items).await
     }
 
+    /// Environment selections captured by the active turn, before later settings updates.
+    /// Includes environments that are still starting or have failed. Hosts use this snapshot
+    /// to authorize steering against every executor that the active turn selected.
+    pub async fn active_turn_environment_selections(
+        &self,
+    ) -> Option<Vec<TurnEnvironmentSelection>> {
+        let active = self.session.active_turn.lock().await;
+        let task = active.as_ref()?.task.as_ref()?;
+        Some(task.turn_context.initial_environments.all_selections())
+    }
+
     /// Captures a regular turn only after its input is recorded. The caller must flush the rollout.
     pub async fn interrupted_turn(
         &self,
@@ -674,6 +692,16 @@ impl CodexThread {
         self.session
             .inject_no_new_turn(vec![item], /*current_turn_context*/ None)
             .await;
+    }
+
+    /// Records an explicit user goal mutation without scheduling a model response.
+    pub async fn record_user_goal_update(
+        &self,
+        update: crate::context::UserGoalUpdate,
+    ) -> CodexResult<()> {
+        self.session.record_user_goal_update(update).await;
+        self.checkpoint_preparation().await?;
+        Ok(())
     }
 
     /// Record raw Responses API items without starting a new turn.

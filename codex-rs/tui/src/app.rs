@@ -103,7 +103,6 @@ use codex_app_server_protocol::ConfigReadResponse;
 use codex_app_server_protocol::ConfigValueWriteParams;
 use codex_app_server_protocol::ConfigWriteResponse;
 use codex_app_server_protocol::FeedbackUploadParams;
-use codex_app_server_protocol::FeedbackUploadResponse;
 use codex_app_server_protocol::GetAccountRateLimitsResponse;
 use codex_app_server_protocol::HooksListEntry;
 use codex_app_server_protocol::ListMcpServerStatusParams;
@@ -223,6 +222,7 @@ mod empty_state_policy;
 mod event_dispatch;
 mod exit_summary;
 mod experimental_features;
+mod feedback_upload;
 mod file_change_approvals;
 mod history_pagination;
 mod history_ui;
@@ -233,6 +233,7 @@ mod misalignment_policy;
 mod model_defaults;
 mod new_session;
 pub(crate) use new_session::has_launch_setting;
+mod clipboard;
 mod native_history;
 mod owned_transcript;
 mod pending_interactive_replay;
@@ -240,6 +241,7 @@ mod permission_shortcuts;
 mod pets;
 mod platform_actions;
 mod plugin_mentions;
+mod prompt_suggestions;
 mod rate_limit_refresh;
 mod realtime_delivery;
 mod realtime_settings;
@@ -644,6 +646,7 @@ pub(crate) struct App {
     background_voice: Option<Box<ChatWidget>>,
     background_voice_error: Option<(ThreadId, String)>,
     temporary_structured_requests: HashMap<ThreadId, mpsc::UnboundedSender<ServerNotification>>,
+    hidden_prompt_threads: VecDeque<ThreadId>,
     /// Track title generation across thread switches and deduplicate automatic requests.
     pending_thread_titles: HashMap<(ThreadId, ThreadTitleDestination), CancellationToken>,
     thread_event_listener_tasks: HashMap<ThreadId, JoinHandle<()>>,
@@ -691,6 +694,9 @@ pub(crate) struct App {
     // persist an older toggle after a newer one.
     pending_hook_enabled_writes: HashMap<String, Option<bool>>,
     recap: recap::RecapState,
+    // App fixtures keep their home alive across widget replacement; drop it last.
+    #[cfg(test)]
+    _test_codex_home: Option<tempfile::TempDir>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -862,8 +868,11 @@ impl App {
         app_server: &mut AppServerSession,
         event: TuiEvent,
     ) -> Result<AppRunControl> {
+        self.finish_clipboard(tui);
         if matches!(&event, TuiEvent::Key(_))
-            && self.handle_composer_copy_event(tui, &event, tui::Tui::copy_transcript_selection)
+            && self.handle_composer_copy_event(tui, &event, |tui, text| {
+                tui.copy_transcript_selection(text, crate::clipboard_copy::CopyFormat::PlainText)
+            })
         {
             return Ok(AppRunControl::Continue);
         }

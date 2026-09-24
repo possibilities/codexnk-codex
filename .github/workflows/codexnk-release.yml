@@ -1,0 +1,130 @@
+# codexnk CI. Tests the invocation-axes carry and, on a codexnk-v* tag,
+# builds release binaries. Upstream workflows in this tree stay disabled
+# on the public repo; openai/codex covers code this patch does not change.
+
+name: codexnk-release
+
+on:
+  push:
+    branches:
+      - integration
+      - carry/invocation-axes
+    tags:
+      - "codexnk-v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    name: invocation-axes tests
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: x86_64-unknown-linux-gnu
+
+      - uses: taiki-e/install-action@44c6d64aa62cd779e873306675c7a58e86d6d532 # v2.62.49
+        with:
+          tool: nextest
+          version: 0.9.103
+
+      - name: Test invocation axes
+        shell: bash
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          CARGO_PROFILE_TEST_DEBUG: "0"
+          CARGO_INCREMENTAL: "0"
+        run: |
+          just test -p codex-cli invocation_axes
+          just test -p codex-config scoped_capabilities_keep_trusted_project_mcp_without_home_config
+          just test -p codex-skills-extension scoped_capabilities_keep_project_skills_without_home_skills
+          just test -p codex-core-plugins scoped_capabilities_omit_home_marketplace_but_keep_project_marketplace
+
+  build:
+    name: Build ${{ matrix.target }}
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/codexnk-v')
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: codex-rs
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build codex
+        shell: bash
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          STABLE_GIT_COMMIT: ${{ github.sha }}
+        run: cargo build --target "${{ matrix.target }}" --release --bin codex
+
+      - name: Package
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bin="${CARGO_TARGET_DIR}/${TARGET}/release/codex"
+          name="codex-${TARGET}"
+          mkdir -p "${GITHUB_WORKSPACE}/${name}"
+          cp "$bin" "${GITHUB_WORKSPACE}/${name}/codex"
+          tar -C "${GITHUB_WORKSPACE}" -czf "${GITHUB_WORKSPACE}/${name}.tar.gz" "$name"
+
+      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: codex-${{ matrix.target }}
+          path: codex-${{ matrix.target }}.tar.gz
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/codexnk-v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes "Patched Codex binary. Archives contain a \`codex\` executable."

@@ -789,6 +789,9 @@
             "default_mode_request_user_input": {
               "type": "boolean"
             },
+            "defer_mailbox_preemption": {
+              "type": "boolean"
+            },
             "deferred_executor": {
               "type": "boolean"
             },
@@ -1261,6 +1264,32 @@
         }
       },
       "type": "object"
+    },
+    "CopyOnSelect": {
+      "description": "When transcript mouse selections are copied on release.",
+      "oneOf": [
+        {
+          "description": "Use the terminal-specific default.",
+          "enum": [
+            "auto"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Copy every nonempty transcript mouse selection on release.",
+          "enum": [
+            "always"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "Require an explicit copy action.",
+          "enum": [
+            "never"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "CredentialAuthMethod": {
       "description": "Authentication formats supported by declarative credential providers.",
@@ -1811,7 +1840,7 @@
           "type": "number"
         },
         "thread_context": {
-          "description": "Use thread-owned context for sync and async Guardian. Defaults to true. Independent of the Guardian v2 `enabled` toggle.",
+          "description": "Deprecated and ignored; thread-owned Guardian context is always enabled.",
           "type": "boolean"
         },
         "transcript": {
@@ -2334,6 +2363,10 @@
         },
         "client_id": {
           "description": "Explicit OAuth client identifier to present during authorization and token exchange.",
+          "type": "string"
+        },
+        "client_secret": {
+          "description": "OAuth client secret used for token exchange with a pre-registered client.",
           "type": "string"
         }
       },
@@ -3160,6 +3193,14 @@
             }
           ],
           "description": "Optional log exporter"
+        },
+        "log_agent_responses": {
+          "description": "Opt in to logging final main-agent and spawned-subagent responses to an OTLP log exporter. Defaults to false. Response text can be sensitive and is capped at 64 KiB.",
+          "type": "boolean"
+        },
+        "log_guardian_assessments": {
+          "description": "Opt in to logging completed Guardian assessments to an OTLP log exporter. Defaults to false. Rationales can be sensitive and are capped at 64 KiB.",
+          "type": "boolean"
         },
         "log_user_prompt": {
           "description": "Log user prompt in traces",
@@ -4240,6 +4281,15 @@
           "description": "Generate automatic conversation recaps when the terminal is unfocused. Defaults to `true`. Disabling this leaves `/recap` available on demand.",
           "type": "boolean"
         },
+        "copy_on_select": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/CopyOnSelect"
+            }
+          ],
+          "default": "auto",
+          "description": "Copy selected transcript text when the mouse button is released. Defaults to `auto`: enabled in tmux/Zellij and in direct macOS terminals except Ghostty/Kitty. On other platforms, direct terminals default off except iTerm2/Terminal.app."
+        },
         "disable_paste_burst": {
           "description": "When true, disables burst-paste detection for typed input entirely. All characters are inserted as they are received, and no buffering or placeholder replacement will occur for fast keypress bursts. Overrides the legacy top-level `disable_paste_burst` setting. Defaults to `false`.",
           "type": "boolean"
@@ -4502,6 +4552,11 @@
           ],
           "default": "composer",
           "description": "Where the terminal pet should anchor vertically.\n\nDefaults to `composer`, which follows the current TUI composer viewport."
+        },
+        "prompt_suggestions": {
+          "default": false,
+          "description": "Suggest a next message after successful turns. Defaults to `false`.",
+          "type": "boolean"
         },
         "question_esc_back": {
           "default": true,
@@ -6690,6 +6745,9 @@
           "type": "boolean"
         },
         "default_mode_request_user_input": {
+          "type": "boolean"
+        },
+        "defer_mailbox_preemption": {
           "type": "boolean"
         },
         "deferred_executor": {

@@ -510,6 +510,9 @@ impl BottomPane {
         if let Some(questions) = &mut self.questions {
             questions.set_keymap(keymap);
         }
+        // Show the first shortcut from the same keymap ChatWidget uses to handle queued edits.
+        self.pending_input_preview
+            .set_edit_binding(keymap.primary_hint(KeymapContext::Chat, "edit_queued_message"));
         let interrupt_binding = keymap.primary_hint(KeymapContext::Chat, "interrupt_turn");
         self.pending_input_preview
             .set_interrupt_binding(interrupt_binding);
@@ -602,19 +605,6 @@ impl BottomPane {
 
     pub(crate) fn set_parent_owned_thread(&mut self) {
         self.composer.set_parent_owned_thread();
-        self.request_redraw();
-    }
-
-    /// Update the key hint shown next to queued messages so it matches the
-    /// binding that `ChatWidget` actually listens for.
-    pub(crate) fn set_queued_message_edit_binding(
-        &mut self,
-        binding: Option<crate::key_hint::ShortcutHint>,
-    ) {
-        self.pending_input_preview.set_edit_binding(binding);
-        if let Some(questions) = &mut self.questions {
-            questions.next_hint = binding;
-        }
         self.request_redraw();
     }
 
@@ -1283,6 +1273,30 @@ impl BottomPane {
 
     // esc_backtrack_hint_visible removed; hints are controlled internally.
 
+    pub(crate) fn set_prompt_suggestion(
+        &mut self,
+        request: crate::prompt_suggestions::SuggestionRequest,
+    ) {
+        self.composer.set_prompt_suggestion(request);
+    }
+
+    pub(crate) fn has_prompt_suggestion(&self) -> bool {
+        self.composer.has_prompt_suggestion()
+    }
+
+    pub(crate) fn clear_prompt_suggestion(&mut self) {
+        self.composer.clear_prompt_suggestion();
+    }
+
+    pub(crate) fn apply_prompt_suggestion(
+        &mut self,
+        request: &crate::prompt_suggestions::SuggestionRequest,
+        text: Option<String>,
+    ) {
+        self.composer.apply_prompt_suggestion(request, text);
+        self.request_redraw();
+    }
+
     pub fn set_task_running(&mut self, running: bool) {
         let was_running = self.is_task_running;
         self.is_task_running = running;
@@ -1753,6 +1767,15 @@ impl BottomPane {
 
     pub(crate) fn end_composer_drag(&mut self) {
         self.composer.end_mouse_drag();
+    }
+
+    pub(crate) fn finish_composer_copy(
+        &mut self,
+        completion: &(u64, crate::clipboard_copy::worker::CopyResult),
+        visible: bool,
+    ) -> Option<usize> {
+        let current = visible && !self.has_active_view();
+        self.composer.finish_copy(completion, current)
     }
 
     pub(crate) fn copy_composer_selection(

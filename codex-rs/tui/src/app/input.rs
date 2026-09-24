@@ -586,7 +586,8 @@ impl App {
             } else if self.should_reject_side_backtrack_esc(key_event) {
                 self.reject_side_backtrack_esc();
             } else {
-                self.chat_widget.handle_key_event(key_event);
+                let action = self.chat_widget.handle_key_event(key_event);
+                self.handle_clipboard_key_action(tui, action);
             }
             return;
         }
@@ -620,7 +621,8 @@ impl App {
                         self.reset_backtrack_state();
                     }
                 }
-                self.chat_widget.handle_key_event(key_event);
+                let action = self.chat_widget.handle_key_event(key_event);
+                self.handle_clipboard_key_action(tui, action);
             }
             _ => {
                 self.chat_widget.handle_key_event(key_event);
@@ -717,6 +719,7 @@ impl App {
 
     pub(crate) fn should_handle_backtrack_esc(&self, key_event: KeyEvent) -> bool {
         !self.chat_widget.is_external_writer_view()
+            && !self.chat_widget.has_prompt_suggestion()
             && !self.chat_widget.side_conversation_active()
             && !self.chat_widget.shortcut_overlay_visible()
             && self.chat_widget.is_normal_backtrack_mode()

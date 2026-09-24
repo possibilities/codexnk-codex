@@ -2603,6 +2603,8 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::OutputItemDone(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, active_item.as_ref());
+                sess.reserve_assistant_message_order(&turn_context, &item)
+                    .await;
                 if analytics_tool_call_ids.len() < MAX_ANALYTICS_TOOL_CALL_IDS_PER_RESPONSE {
                     let call_id = match &item {
                         ResponseItem::FunctionCall { call_id, .. }
@@ -2705,8 +2707,15 @@ async fn try_run_sampling_request(
                     last_agent_message = Some(agent_message);
                 }
                 needs_follow_up |= output_result.needs_follow_up;
-                // todo: remove before stabilizing multi-agent v2
-                if preempt_for_mailbox_mail && sess.input_queue.has_pending_mailbox_items().await {
+                // Hosts can keep the current response intact and deliver mail before the next
+                // model request instead of cutting off its remaining tool calls.
+                if preempt_for_mailbox_mail
+                    && !turn_context
+                        .config
+                        .features
+                        .enabled(Feature::DeferMailboxPreemption)
+                    && sess.input_queue.has_pending_mailbox_items().await
+                {
                     break Ok(SamplingRequestResult {
                         needs_follow_up: true,
                         last_agent_message,
@@ -2715,6 +2724,8 @@ async fn try_run_sampling_request(
             }
             ResponseEvent::OutputItemAdded(mut item) => {
                 assign_missing_streamed_response_item_id(&mut item, /*active_item*/ None);
+                sess.reserve_assistant_message_order(&turn_context, &item)
+                    .await;
                 if let ResponseItem::CustomToolCall {
                     call_id,
                     name,

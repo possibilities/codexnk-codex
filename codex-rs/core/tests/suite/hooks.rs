@@ -1678,7 +1678,7 @@ print(json.dumps({"hookSpecificOutput": {
 
     let forked = test
         .thread_manager
-        .fork_thread(
+        .fork_legacy_thread(
             ForkSnapshot::TruncateBeforeNthUserMessage(1),
             StartThreadOptions::new(test.config.clone()),
             test.codex.rollout_path().expect("parent rollout path"),
@@ -2812,12 +2812,8 @@ async fn blocked_user_prompt_submit_persists_additional_context_for_next_turn() 
     Ok(())
 }
 
-#[test_case::test_case(/*thread_context_enabled*/ true; "retained context enabled")]
-#[test_case::test_case(/*thread_context_enabled*/ false; "retained context disabled")]
 #[tokio::test]
-async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
-    thread_context_enabled: bool,
-) -> Result<()> {
+async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt() -> Result<()> {
     skip_if_no_network!(Ok(()));
 
     let (gate_completed_tx, gate_completed_rx) = oneshot::channel();
@@ -2862,10 +2858,6 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
         })
         .with_config(move |config| {
             trust_discovered_hooks(config);
-            config
-                .features
-                .set_enabled(Feature::GuardianThreadContext, thread_context_enabled)
-                .expect("test context mode");
         });
     let test = builder.build_with_streaming_server(&server).await?;
 
@@ -2925,30 +2917,26 @@ async fn blocked_queued_prompt_does_not_strand_earlier_accepted_prompt(
     );
 
     let history = test.codex.conversation_history_snapshot().await;
-    assert_eq!(history.retained_context().is_some(), thread_context_enabled);
+    assert!(history.retained_context().is_some());
     let retained = serde_json::to_value(history.retained_context().cloned().unwrap_or_default())?;
+    let messages = retained["user_messages"]
+        .as_array()
+        .expect("retained user messages");
     assert_eq!(
-        retained["user_messages"]
-            .as_array()
-            .expect("retained user messages")
+        messages
             .iter()
-            .map(|message| (message["order"].clone(), message["text"].clone()))
+            .map(|message| message["text"].clone())
             .collect::<Vec<_>>(),
-        if thread_context_enabled {
-            vec![
-                (json!(0), json!("initial prompt")),
-                (json!(1), json!("accepted queued prompt")),
-            ]
-        } else {
-            Vec::new()
-        },
+        vec![json!("initial prompt"), json!("accepted queued prompt")],
     );
-    assert_eq!(
-        retained["next_order"],
-        // Three accepted input positions (including the blocked prompt), then
-        // the two completed assistant messages.
-        json!(if thread_context_enabled { 5 } else { 0 })
+    assert!(
+        messages
+            .windows(2)
+            .all(|pair| pair[0]["order"].as_u64() < pair[1]["order"].as_u64())
     );
+    // Three accepted input positions (including the blocked prompt), then
+    // the two completed assistant messages.
+    assert_eq!(retained["next_order"], json!(5));
 
     let hook_inputs = read_user_prompt_submit_hook_inputs(test.codex_home_path())?;
     assert_eq!(hook_inputs.len(), 3);

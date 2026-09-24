@@ -773,6 +773,9 @@ pub struct Config {
     /// Generate automatic TUI recaps. Manual `/recap` remains available when disabled.
     pub tui_auto_recap: bool,
 
+    /// Generate suggested next messages in the TUI composer.
+    pub tui_prompt_suggestions: bool,
+
     /// Persisted startup availability NUX state for model tooltips.
     pub model_availability_nux: ModelAvailabilityNuxConfig,
 
@@ -785,6 +788,9 @@ pub struct Config {
 
     /// Own the fullscreen transcript when the alternate screen is enabled.
     pub tui_fullscreen_transcript: bool,
+
+    /// Override the terminal-specific default for copying transcript mouse selections.
+    pub tui_copy_on_select: codex_config::types::CopyOnSelect,
 
     /// Start the TUI in the specified collaboration mode (plan/default).
 
@@ -4455,6 +4461,7 @@ impl Config {
                 .map(|t| t.show_server_version_notice)
                 .unwrap_or(true),
             tui_auto_recap: cfg.tui.as_ref().map(|t| t.auto_recap).unwrap_or(/*default*/ true),
+            tui_prompt_suggestions: cfg.tui.as_ref().is_some_and(|t| t.prompt_suggestions),
             model_availability_nux: cfg
                 .tui
                 .as_ref()
@@ -4475,6 +4482,11 @@ impl Config {
                 .tui
                 .as_ref()
                 .is_none_or(|tui| tui.fullscreen_transcript),
+            tui_copy_on_select: cfg
+                .tui
+                .as_ref()
+                .map(|tui| tui.copy_on_select)
+                .unwrap_or_default(),
             tui_alternate_screen: cfg
                 .tui
                 .as_ref()

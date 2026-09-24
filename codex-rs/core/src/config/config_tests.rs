@@ -1258,11 +1258,13 @@ fn config_toml_deserializes_model_availability_nux() {
             show_tooltips: true,
             show_server_version_notice: true,
             auto_recap: true,
+            prompt_suggestions: false,
             disable_paste_burst: None,
             vim_mode_default: false,
             question_esc_back: true,
             raw_output_mode: false,
             fullscreen_transcript: true,
+            copy_on_select: Default::default(),
             alternate_screen: AltScreenMode::default(),
             status_line: None,
             status_line_use_colors: true,
@@ -4397,11 +4399,13 @@ fn tui_config_missing_notifications_field_defaults_to_enabled() {
             show_tooltips: true,
             show_server_version_notice: true,
             auto_recap: true,
+            prompt_suggestions: false,
             disable_paste_burst: None,
             vim_mode_default: false,
             question_esc_back: true,
             raw_output_mode: false,
             fullscreen_transcript: true,
+            copy_on_select: Default::default(),
             alternate_screen: AltScreenMode::Auto,
             status_line: None,
             status_line_use_colors: true,
@@ -9898,6 +9902,8 @@ async fn metrics_exporter_defaults_to_statsig_when_missing() -> std::io::Result<
     .await?;
 
     assert_eq!(config.otel.metrics_exporter, OtelExporterKind::Statsig);
+    assert!(!config.otel.agent_response_logging_enabled());
+    assert!(!config.otel.guardian_assessment_logging_enabled());
     Ok(())
 }
 
@@ -9907,6 +9913,8 @@ async fn trace_exporter_defaults_to_none_when_log_exporter_is_set() -> std::io::
     let mut cfg = fixture.cfg.clone();
     cfg.otel = Some(OtelConfigToml {
         tool_result: toml::from_str("max_bytes = 8192").expect("tool-result logging config"),
+        log_agent_responses: Some(true),
+        log_guardian_assessments: Some(true),
         exporter: Some(OtelExporterKind::OtlpHttp {
             endpoint: "http://localhost:14318/v1/logs".to_string(),
             headers: HashMap::new(),
@@ -9917,7 +9925,7 @@ async fn trace_exporter_defaults_to_none_when_log_exporter_is_set() -> std::io::
         ..Default::default()
     });
 
-    let config = Config::load_from_base_config_with_overrides(
+    let mut config = Config::load_from_base_config_with_overrides(
         cfg,
         ConfigOverrides {
             cwd: Some(fixture.cwd_path()),
@@ -9928,11 +9936,15 @@ async fn trace_exporter_defaults_to_none_when_log_exporter_is_set() -> std::io::
     .await?;
 
     assert_eq!(config.otel.tool_result.max_bytes, 8192);
+    assert!(config.otel.agent_response_logging_enabled());
+    assert!(config.otel.guardian_assessment_logging_enabled());
     assert!(matches!(
         config.otel.exporter,
         OtelExporterKind::OtlpHttp { .. }
     ));
     assert_eq!(config.otel.trace_exporter, OtelExporterKind::None);
+    config.otel.exporter = OtelExporterKind::None;
+    assert!(!config.otel.guardian_assessment_logging_enabled());
     Ok(())
 }
 
@@ -10413,14 +10425,14 @@ trust_level = "trusted"
 
 #[cfg(unix)]
 #[tokio::test]
-async fn active_project_does_not_match_configured_alias_for_canonical_cwd() -> anyhow::Result<()> {
+async fn active_project_preserves_cwd_alias_and_repo_root_precedence() -> anyhow::Result<()> {
     let tmp = tempdir()?;
     let project_root = tmp.path().join("project");
     let alias_root = tmp.path().join("project_alias");
     std::fs::create_dir_all(&project_root)?;
     std::os::unix::fs::symlink(&project_root, &alias_root)?;
 
-    let config = ConfigToml {
+    let mut config = ConfigToml {
         projects: Some(HashMap::from([(
             alias_root.to_string_lossy().to_string(),
             ProjectConfig {
@@ -10433,6 +10445,28 @@ async fn active_project_does_not_match_configured_alias_for_canonical_cwd() -> a
     assert_eq!(
         config.get_active_project(&project_root, /*repo_root*/ None),
         None
+    );
+
+    let trusted_root = ProjectConfig {
+        trust_level: Some(TrustLevel::Trusted),
+    };
+    config.projects.as_mut().unwrap().insert(
+        tmp.path().to_string_lossy().into_owned(),
+        trusted_root.clone(),
+    );
+    assert_eq!(
+        config.get_active_project(&project_root, Some(tmp.path())),
+        Some(trusted_root)
+    );
+
+    let empty_cwd = ProjectConfig { trust_level: None };
+    config.projects.as_mut().unwrap().insert(
+        project_root.to_string_lossy().into_owned(),
+        empty_cwd.clone(),
+    );
+    assert_eq!(
+        config.get_active_project(&project_root, Some(tmp.path())),
+        Some(empty_cwd)
     );
 
     Ok(())
@@ -11707,18 +11741,21 @@ shell_tool = false
     Ok(())
 }
 
-#[test]
-fn retired_personality_feature_requirements_do_not_reject_configured_values() -> std::io::Result<()>
-{
+#[test_case::test_case(Feature::Personality; "personality")]
+#[test_case::test_case(Feature::GuardianThreadContext; "guardian thread context")]
+fn retired_feature_requirements_do_not_pin_configured_values(
+    feature: Feature,
+) -> std::io::Result<()> {
+    let key = feature.key();
     for (configured, required) in [(true, false), (false, true)] {
         let cfg: ConfigToml = toml::from_str(&format!(
-            "[features]\npersonality = {configured}\nshell_tool = false\n"
+            "[features]\n\"{key}\" = {configured}\nshell_tool = false\n"
         ))
         .expect("valid config");
         let requirement = Sourced::new(
             FeatureRequirementsToml {
                 entries: BTreeMap::from([
-                    ("personality".to_string(), required),
+                    (key.to_string(), required),
                     ("shell_tool".to_string(), false),
                 ]),
             },
@@ -11745,11 +11782,15 @@ fn retired_personality_feature_requirements_do_not_reject_configured_values() ->
         )?;
         assert_eq!(
             (
-                features.enabled(Feature::Personality),
+                features.enabled(feature),
                 features.enabled(Feature::ShellTool),
-                warnings,
+                warnings.len(),
             ),
-            (false, false, Vec::new()),
+            (
+                Features::with_defaults().enabled(feature),
+                false,
+                usize::from(feature == Feature::GuardianThreadContext),
+            ),
         );
     }
 

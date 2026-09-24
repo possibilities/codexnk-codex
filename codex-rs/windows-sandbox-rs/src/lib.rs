@@ -5,6 +5,11 @@
 #[cfg(any(target_os = "windows", test))]
 mod ssh_config_dependencies;
 
+#[doc(hidden)]
+pub mod environment_transport;
+#[cfg(any(windows, test))]
+mod launch_environment;
+
 use std::fmt;
 use std::sync::Arc;
 
@@ -278,6 +283,8 @@ pub use helper_materialization::resolve_exe_for_launch;
 pub use hide_users::hide_current_user_profile_dir;
 #[cfg(target_os = "windows")]
 pub use hide_users::hide_newly_created_users;
+#[cfg(target_os = "windows")]
+pub use identity::SandboxAccountCredentialMismatch;
 #[cfg(target_os = "windows")]
 pub use identity::logon_existing_sandbox_account;
 #[cfg(target_os = "windows")]

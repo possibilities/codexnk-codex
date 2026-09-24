@@ -492,6 +492,9 @@ pub async fn load_config_layers_state(
         config_requirements_toml.into_toml(),
     )?
     .with_user_and_project_exec_policy_rules_ignored(ignore_user_and_project_exec_policy_rules);
+    if overrides.exclude_home_capabilities {
+        config_layer_stack = config_layer_stack.without_home_capabilities();
+    }
     config_layer_stack.is_projectless = is_projectless;
     startup_warnings.extend(ignored_config_warning(
         &config_layer_stack,

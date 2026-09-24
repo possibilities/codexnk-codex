@@ -808,6 +808,7 @@ See the Codex keymap documentation for supported actions and examples."
             background_voice: None,
             background_voice_error: None,
             temporary_structured_requests: HashMap::new(),
+            hidden_prompt_threads: VecDeque::new(),
             pending_thread_titles: HashMap::new(),
             thread_event_listener_tasks: HashMap::new(),
             agent_navigation: AgentNavigationState::default(),
@@ -845,6 +846,8 @@ See the Codex keymap documentation for supported actions and examples."
             pending_plugin_enabled_writes: HashMap::new(),
             pending_hook_enabled_writes: HashMap::new(),
             recap: recap::RecapState::default(),
+            #[cfg(test)]
+            _test_codex_home: None,
         };
         if !tui.is_terminal_focused() {
             app.recap.note_focus_lost(Instant::now());
@@ -868,6 +871,7 @@ See the Codex keymap documentation for supported actions and examples."
         app.update_visible_history_rows(tui.terminal.last_known_screen_size);
         let initial_session_started_at = Instant::now();
         if let Some(started) = initial_started_thread {
+            app.chat_widget.prompt_suggestion_summary = started.reasoning_summary;
             let thread_id = started.session.thread_id;
             app.chat_widget
                 .set_task_mentions_enabled(started.task_tools_available);

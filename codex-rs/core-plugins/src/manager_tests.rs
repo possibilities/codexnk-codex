@@ -130,6 +130,33 @@ fn plugins_config_input_with_requirements(
     )
 }
 
+#[test]
+fn scoped_capabilities_omit_home_marketplace_but_keep_project_marketplace() {
+    let temp = TempDir::new().expect("temp dir");
+    let home = temp.path().join("home");
+    let project = temp.path().join("project");
+    for (root, name) in [(&home, "home"), (&project, "project")] {
+        let manifest_dir = root.join(".agents/plugins");
+        fs::create_dir_all(&manifest_dir).expect("marketplace directory");
+        fs::write(
+            manifest_dir.join("marketplace.json"),
+            format!(r#"{{"name":"{name}","plugins":[]}}"#),
+        )
+        .expect("marketplace manifest");
+    }
+    let project = AbsolutePathBuf::try_from(project).expect("absolute project");
+    let roots = [project];
+    let config = ConfigLayerStack::default().without_home_capabilities();
+    let marketplaces = crate::marketplace::list_marketplaces_with_home(
+        &roots,
+        home_marketplace_root(&config, Some(&home)),
+    )
+    .expect("marketplaces")
+    .marketplaces;
+    assert_eq!(marketplaces.len(), 1);
+    assert_eq!(marketplaces[0].name, "project");
+}
+
 #[tokio::test]
 async fn plugins_manager_reads_auth_mode_from_auth_manager() {
     let tmp = TempDir::new().unwrap();

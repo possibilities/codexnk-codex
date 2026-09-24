@@ -5,7 +5,7 @@ use crate::format_config_layer_source;
 
 use super::fingerprint::record_origins;
 use super::fingerprint::version_for_toml;
-use super::key_aliases::normalized_with_key_aliases;
+use super::key_aliases::normalize_key_aliases;
 use super::merge::merge_toml_values;
 use crate::CloudConfigBundleLoader;
 use crate::ConfigLayer;
@@ -54,6 +54,9 @@ pub struct LoaderOverrides {
     pub ignore_user_config: bool,
     /// Skip project-root discovery and all project configuration layers.
     pub ignore_project_config: bool,
+    /// Exclude capability roots discovered from the process user's home directory.
+    /// Explicit user config in CODEX_HOME and trusted project roots still apply.
+    pub exclude_home_capabilities: bool,
     pub ignore_user_and_project_exec_policy_rules: bool,
     //TODO(gt): Add a macos_ prefix to this field and remove the target_os check.
     #[cfg(target_os = "macos")]
@@ -78,6 +81,7 @@ impl LoaderOverrides {
             ignore_login_requirements: false,
             ignore_user_config: false,
             ignore_project_config: false,
+            exclude_home_capabilities: false,
             ignore_user_and_project_exec_policy_rules: false,
             #[cfg(target_os = "macos")]
             managed_preferences_base64: Some(String::new()),
@@ -265,6 +269,9 @@ pub struct ConfigLayerStack {
     /// Whether execpolicy should skip `.rules` files from user and project config-layer folders.
     ignore_user_and_project_exec_policy_rules: bool,
 
+    /// Whether home-directory skills and plugin marketplaces are omitted.
+    exclude_home_capabilities: bool,
+
     /// Startup warnings discovered while building this stack.
     ///
     /// `None` means the loader did not check for stack-level warnings, while
@@ -290,6 +297,7 @@ impl ConfigLayerStack {
             requirements,
             requirements_toml,
             ignore_user_and_project_exec_policy_rules: false,
+            exclude_home_capabilities: false,
             startup_warnings: None,
             is_projectless: false,
         })
@@ -305,6 +313,15 @@ impl ConfigLayerStack {
 
     pub fn ignore_user_and_project_exec_policy_rules(&self) -> bool {
         self.ignore_user_and_project_exec_policy_rules
+    }
+
+    pub fn without_home_capabilities(mut self) -> Self {
+        self.exclude_home_capabilities = true;
+        self
+    }
+
+    pub fn excludes_home_capabilities(&self) -> bool {
+        self.exclude_home_capabilities
     }
 
     pub(crate) fn with_startup_warnings(mut self, startup_warnings: Vec<String>) -> Self {
@@ -427,6 +444,7 @@ impl ConfigLayerStack {
             requirements_toml: self.requirements_toml.clone(),
             ignore_user_and_project_exec_policy_rules: self
                 .ignore_user_and_project_exec_policy_rules,
+            exclude_home_capabilities: self.exclude_home_capabilities,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
         })
@@ -463,6 +481,7 @@ impl ConfigLayerStack {
             requirements_toml: self.requirements_toml.clone(),
             ignore_user_and_project_exec_policy_rules: self
                 .ignore_user_and_project_exec_policy_rules,
+            exclude_home_capabilities: self.exclude_home_capabilities,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
         }
@@ -506,7 +525,7 @@ impl ConfigLayerStack {
         let mut provider_paths = vec!["features.network_proxy.credentials.".to_string()];
 
         for layer in self.layers_low_to_high() {
-            let config = normalized_with_key_aliases(&layer.config, &[]);
+            let config = normalize_key_aliases(&layer.config);
             if let Some(profiles) = config.get("profiles").and_then(TomlValue::as_table) {
                 provider_paths.extend(
                     profiles
