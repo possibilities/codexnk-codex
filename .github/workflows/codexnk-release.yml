@@ -1,4 +1,4 @@
-# codexnk CI. Tests the invocation-axes carry and, on a codexnk-v* tag,
+# codexnk CI. Tests both carries and, on a codexnk-v* tag,
 # builds release binaries. Upstream workflows in this tree stay disabled
 # on the public repo; openai/codex covers code this patch does not change.
 
@@ -18,8 +18,11 @@ permissions:
 
 jobs:
   test:
-    name: invocation-axes tests
+    name: codexnk focused tests
     runs-on: ubuntu-24.04
+    env:
+      CARGO_PROFILE_TEST_DEBUG: "0"
+      CARGO_INCREMENTAL: "0"
     defaults:
       run:
         working-directory: codex-rs
@@ -45,13 +48,23 @@ jobs:
         shell: bash
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
-          CARGO_PROFILE_TEST_DEBUG: "0"
-          CARGO_INCREMENTAL: "0"
         run: |
           just test -p codex-cli invocation_axes
           just test -p codex-config scoped_capabilities_keep_trusted_project_mcp_without_home_config
           just test -p codex-skills-extension scoped_capabilities_keep_project_skills_without_home_skills
           just test -p codex-core-plugins scoped_capabilities_omit_home_marketplace_but_keep_project_marketplace
+
+      - name: Test app-server protocol
+        shell: bash
+        run: just test -p codex-app-server-protocol
+
+      - name: Test input middleware over app-server RPC
+        shell: bash
+        run: just test -p codex-app-server input_middleware
+
+      - name: Test realtime input middleware
+        shell: bash
+        run: just test -p codex-app-server realtime_handoff_is_intercepted_before_working_turn
 
   build:
     name: Build ${{ matrix.target }}
