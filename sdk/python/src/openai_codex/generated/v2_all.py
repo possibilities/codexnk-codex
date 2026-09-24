@@ -2157,6 +2157,67 @@ class InitializeParams(BaseModel):
     client_info: Annotated[ClientInfo, Field(alias="clientInfo")]
 
 
+class PassedInputMiddlewareDisposition(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["passed"], Field(title="PassedInputMiddlewareDispositionType")]
+
+
+class ReplacedInputMiddlewareDisposition(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["replaced"], Field(title="ReplacedInputMiddlewareDispositionType")]
+
+
+class InterceptedInputMiddlewareDisposition(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    operation_id: Annotated[str, Field(alias="operationId")]
+    type: Annotated[
+        Literal["intercepted"], Field(title="InterceptedInputMiddlewareDispositionType")
+    ]
+
+
+class RejectedInputMiddlewareDisposition(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    type: Annotated[Literal["rejected"], Field(title="RejectedInputMiddlewareDispositionType")]
+
+
+class InputMiddlewareDisposition(
+    RootModel[
+        PassedInputMiddlewareDisposition
+        | ReplacedInputMiddlewareDisposition
+        | InterceptedInputMiddlewareDisposition
+        | RejectedInputMiddlewareDisposition
+    ]
+):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    root: (
+        PassedInputMiddlewareDisposition
+        | ReplacedInputMiddlewareDisposition
+        | InterceptedInputMiddlewareDisposition
+        | RejectedInputMiddlewareDisposition
+    )
+
+
+class InputMiddlewareEffectStatus(Enum):
+    succeeded = "succeeded"
+    failed = "failed"
+    unknown = "unknown"
+
+
+class InputMiddlewareUnavailablePolicy(Enum):
+    pass_ = "pass"
+    reject = "reject"
+
+
 class InputModality(Enum):
     text = "text"
     image = "image"
@@ -8466,6 +8527,36 @@ class HooksListResponse(BaseModel):
     data: list[HooksListEntry]
 
 
+class InputMiddlewareEffectReceipt(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    status: InputMiddlewareEffectStatus
+    summary: str
+
+
+class InputMiddlewareRecord(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    disposition: InputMiddlewareDisposition
+    effect: InputMiddlewareEffectReceipt | None = None
+    input_id: Annotated[str, Field(alias="inputId")]
+    original_text: Annotated[str, Field(alias="originalText")]
+    selected_text: Annotated[str | None, Field(alias="selectedText")] = None
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
+class InputMiddlewareResolvedNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    disposition: InputMiddlewareDisposition
+    effect: InputMiddlewareEffectReceipt | None = None
+    input_id: Annotated[str, Field(alias="inputId")]
+    thread_id: Annotated[str, Field(alias="threadId")]
+
+
 class ListMcpServerStatusParams(BaseModel):
     model_config = ConfigDict(
         populate_by_name=True,
@@ -9082,6 +9173,23 @@ class ScheduledTaskSummary(BaseModel):
     name: str
     prompt: str
     schedule: ScheduledTaskSchedule
+
+
+class ThreadInputResolvedServerNotification(BaseModel):
+    model_config = ConfigDict(
+        populate_by_name=True,
+    )
+    emitted_at_ms: Annotated[
+        int | None,
+        Field(
+            alias="emittedAtMs",
+            description="Unix timestamp (in milliseconds) when app-server emitted this notification.",
+        ),
+    ] = None
+    method: Annotated[
+        Literal["thread/input/resolved"], Field(title="Thread/input/resolvedNotificationMethod")
+    ]
+    params: InputMiddlewareResolvedNotification
 
 
 class ThreadStatusChangedServerNotification(BaseModel):
@@ -12948,7 +13056,8 @@ class ItemAutoApprovalReviewCompletedServerNotification(BaseModel):
 
 class ServerNotification(
     RootModel[
-        ErrorServerNotification
+        ThreadInputResolvedServerNotification
+        | ErrorServerNotification
         | ThreadStartedServerNotification
         | ThreadStatusChangedServerNotification
         | ThreadArchivedServerNotification
@@ -13037,7 +13146,8 @@ class ServerNotification(
         populate_by_name=True,
     )
     root: Annotated[
-        ErrorServerNotification
+        ThreadInputResolvedServerNotification
+        | ErrorServerNotification
         | ThreadStartedServerNotification
         | ThreadStatusChangedServerNotification
         | ThreadArchivedServerNotification

@@ -5,12 +5,17 @@ use app_test_support::TestAppServer;
 use app_test_support::create_command_execution_sse_response;
 use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
+use codex_app_server_protocol::ClientRequest;
 use codex_app_server_protocol::CommandExecutionStatus;
+use codex_app_server_protocol::InputMiddlewareAttachParams;
+use codex_app_server_protocol::InputMiddlewareAttachResponse;
+use codex_app_server_protocol::InputMiddlewareUnavailablePolicy;
 use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::ItemStartedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::LoginAccountResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerRequest;
 use codex_app_server_protocol::ThreadForkParams;
 use codex_app_server_protocol::ThreadForkResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
@@ -108,6 +113,81 @@ const V2_HANDOFF_COMPLETE_ACKNOWLEDGEMENT: &str =
     "Background agent finished. Use the preceding [BACKEND] messages as the result.";
 const RESPONSE_ITEM_PREFIX: &str =
     "Use the following context to inform future responses, but do not speak it to the user.";
+
+#[tokio::test]
+async fn realtime_handoff_is_intercepted_before_working_turn() -> Result<()> {
+    skip_if_no_network!(Ok(()));
+    let mut harness = RealtimeE2eHarness::new(
+        RealtimeTestVersion::V1,
+        main_loop_responses(vec![]),
+        realtime_sideband(vec![realtime_sideband_connection(vec![
+            vec![
+                session_updated("realtime_input_middleware"),
+                json!({
+                    "type": "conversation.handoff.requested",
+                    "handoff_id": "h1",
+                    "item_id": "u1",
+                    "input_transcript": "mute my microphone"
+                }),
+            ],
+            vec![],
+        ])]),
+    )
+    .await?;
+    let _: InputMiddlewareAttachResponse = harness
+        .mcp
+        .request(|request_id| ClientRequest::InputMiddlewareAttach {
+            request_id,
+            params: InputMiddlewareAttachParams {
+                thread_id: harness.thread_id.clone(),
+                timeout_ms: 500,
+                on_unavailable: InputMiddlewareUnavailablePolicy::Reject,
+            },
+        })
+        .await?;
+    harness.start_webrtc_realtime("v=offer\r\n").await?;
+    let request = timeout(
+        DEFAULT_TIMEOUT,
+        harness.mcp.read_stream_until_request_message(),
+    )
+    .await??;
+    let ServerRequest::InputMiddlewareRequest { request_id, params } = request else {
+        panic!("expected realtime middleware request: {request:?}");
+    };
+    assert_eq!(
+        params.origin,
+        codex_app_server_protocol::InputMiddlewareOrigin::Realtime
+    );
+    assert!(params.text.contains("mute my microphone"));
+    harness
+        .mcp
+        .send_response(
+            request_id,
+            json!({"type":"intercept","operationId":"mute-op"}),
+        )
+        .await?;
+    let resolved = timeout(
+        DEFAULT_TIMEOUT,
+        harness
+            .mcp
+            .read_stream_until_notification_message("thread/input/resolved"),
+    )
+    .await??;
+    assert_eq!(
+        resolved.params.context("resolved params")?["disposition"]["type"],
+        "intercepted"
+    );
+    assert!(
+        timeout(
+            Duration::from_millis(250),
+            harness.read_notification::<TurnStartedNotification>("turn/started")
+        )
+        .await
+        .is_err()
+    );
+    harness.shutdown().await;
+    Ok(())
+}
 
 #[path = "realtime_transcript_tests.rs"]
 mod transcript_tests;

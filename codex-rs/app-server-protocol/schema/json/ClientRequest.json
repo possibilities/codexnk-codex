@@ -1689,6 +1689,36 @@
       ],
       "type": "object"
     },
+    "InputMiddlewareEffectReceipt": {
+      "properties": {
+        "status": {
+          "$ref": "#/definitions/InputMiddlewareEffectStatus"
+        },
+        "summary": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "status",
+        "summary"
+      ],
+      "type": "object"
+    },
+    "InputMiddlewareEffectStatus": {
+      "enum": [
+        "succeeded",
+        "failed",
+        "unknown"
+      ],
+      "type": "string"
+    },
+    "InputMiddlewareUnavailablePolicy": {
+      "enum": [
+        "pass",
+        "reject"
+      ],
+      "type": "string"
+    },
     "InternalChatMessageMetadataPassthrough": {
       "description": "Internal Responses API passthrough metadata copied into underlying chat messages.\n\nResponses API strongly types this payload. Do not modify it without first getting API approval and making the corresponding Responses API change.",
       "properties": {

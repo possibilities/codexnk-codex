@@ -110,6 +110,12 @@ impl PendingAppServerRequests {
         request: &ServerRequest,
     ) -> Option<UnsupportedAppServerRequest> {
         match request {
+            ServerRequest::InputMiddlewareRequest { request_id, .. } => {
+                Some(UnsupportedAppServerRequest {
+                    request_id: request_id.clone(),
+                    message: "Input middleware is not available in TUI.".to_string(),
+                })
+            }
             ServerRequest::CommandExecutionRequestApproval { request_id, params } => {
                 let approval_id = params
                     .approval_id
@@ -406,6 +412,7 @@ impl PendingAppServerRequests {
 
     pub(super) fn contains_server_request(&self, request: &ServerRequest) -> bool {
         match request {
+            ServerRequest::InputMiddlewareRequest { .. } => false,
             ServerRequest::CommandExecutionRequestApproval { request_id, .. } => self
                 .exec_approvals
                 .values()

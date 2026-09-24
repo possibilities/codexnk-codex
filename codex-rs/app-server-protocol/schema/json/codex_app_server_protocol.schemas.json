@@ -3448,6 +3448,100 @@
       "title": "InitializeResponse",
       "type": "object"
     },
+    "InputMiddlewareOrigin": {
+      "enum": [
+        "client",
+        "realtime"
+      ],
+      "type": "string"
+    },
+    "InputMiddlewareRequestParams": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "properties": {
+        "inputId": {
+          "type": "string"
+        },
+        "origin": {
+          "$ref": "#/definitions/InputMiddlewareOrigin"
+        },
+        "text": {
+          "type": "string"
+        },
+        "threadId": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "inputId",
+        "origin",
+        "text",
+        "threadId"
+      ],
+      "title": "InputMiddlewareRequestParams",
+      "type": "object"
+    },
+    "InputMiddlewareRequestResponse": {
+      "$schema": "http://json-schema.org/draft-07/schema#",
+      "oneOf": [
+        {
+          "properties": {
+            "type": {
+              "enum": [
+                "pass"
+              ],
+              "title": "PassInputMiddlewareRequestResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "type"
+          ],
+          "title": "PassInputMiddlewareRequestResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "text": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "replace"
+              ],
+              "title": "ReplaceInputMiddlewareRequestResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "text",
+            "type"
+          ],
+          "title": "ReplaceInputMiddlewareRequestResponse",
+          "type": "object"
+        },
+        {
+          "properties": {
+            "operationId": {
+              "type": "string"
+            },
+            "type": {
+              "enum": [
+                "intercept"
+              ],
+              "title": "InterceptInputMiddlewareRequestResponseType",
+              "type": "string"
+            }
+          },
+          "required": [
+            "operationId",
+            "type"
+          ],
+          "title": "InterceptInputMiddlewareRequestResponse",
+          "type": "object"
+        }
+      ],
+      "title": "InputMiddlewareRequestResponse"
+    },
     "JSONRPCError": {
       "$schema": "http://json-schema.org/draft-07/schema#",
       "description": "A response to a request that indicates an error occurred.",
@@ -4600,6 +4694,26 @@
       "oneOf": [
         {
           "description": "NEW NOTIFICATIONS",
+          "properties": {
+            "method": {
+              "enum": [
+                "thread/input/resolved"
+              ],
+              "title": "Thread/input/resolvedNotificationMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/v2/InputMiddlewareResolvedNotification"
+            }
+          },
+          "required": [
+            "method",
+            "params"
+          ],
+          "title": "Thread/input/resolvedNotification",
+          "type": "object"
+        },
+        {
           "properties": {
             "method": {
               "enum": [
@@ -6281,7 +6395,32 @@
       "description": "Request initiated from the server and sent to the client.",
       "oneOf": [
         {
-          "description": "NEW APIs Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
+          "description": "NEW APIs",
+          "properties": {
+            "id": {
+              "$ref": "#/definitions/v2/RequestId"
+            },
+            "method": {
+              "enum": [
+                "thread/input/requestDisposition"
+              ],
+              "title": "Thread/input/requestDispositionRequestMethod",
+              "type": "string"
+            },
+            "params": {
+              "$ref": "#/definitions/InputMiddlewareRequestParams"
+            }
+          },
+          "required": [
+            "id",
+            "method",
+            "params"
+          ],
+          "title": "Thread/input/requestDispositionRequest",
+          "type": "object"
+        },
+        {
+          "description": "Sent when approval is requested for a specific command execution. This request is used for Turns started via turn/start.",
           "properties": {
             "id": {
               "$ref": "#/definitions/v2/RequestId"
@@ -13684,6 +13823,178 @@
           }
         },
         "type": "object"
+      },
+      "InputMiddlewareDisposition": {
+        "oneOf": [
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "passed"
+                ],
+                "title": "PassedInputMiddlewareDispositionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "PassedInputMiddlewareDisposition",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "replaced"
+                ],
+                "title": "ReplacedInputMiddlewareDispositionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "ReplacedInputMiddlewareDisposition",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "operationId": {
+                "type": "string"
+              },
+              "type": {
+                "enum": [
+                  "intercepted"
+                ],
+                "title": "InterceptedInputMiddlewareDispositionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "operationId",
+              "type"
+            ],
+            "title": "InterceptedInputMiddlewareDisposition",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "enum": [
+                  "rejected"
+                ],
+                "title": "RejectedInputMiddlewareDispositionType",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "title": "RejectedInputMiddlewareDisposition",
+            "type": "object"
+          }
+        ]
+      },
+      "InputMiddlewareEffectReceipt": {
+        "properties": {
+          "status": {
+            "$ref": "#/definitions/v2/InputMiddlewareEffectStatus"
+          },
+          "summary": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "summary"
+        ],
+        "type": "object"
+      },
+      "InputMiddlewareEffectStatus": {
+        "enum": [
+          "succeeded",
+          "failed",
+          "unknown"
+        ],
+        "type": "string"
+      },
+      "InputMiddlewareRecord": {
+        "properties": {
+          "disposition": {
+            "$ref": "#/definitions/v2/InputMiddlewareDisposition"
+          },
+          "effect": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/InputMiddlewareEffectReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inputId": {
+            "type": "string"
+          },
+          "originalText": {
+            "type": "string"
+          },
+          "selectedText": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "disposition",
+          "inputId",
+          "originalText",
+          "threadId"
+        ],
+        "type": "object"
+      },
+      "InputMiddlewareResolvedNotification": {
+        "$schema": "http://json-schema.org/draft-07/schema#",
+        "properties": {
+          "disposition": {
+            "$ref": "#/definitions/v2/InputMiddlewareDisposition"
+          },
+          "effect": {
+            "anyOf": [
+              {
+                "$ref": "#/definitions/v2/InputMiddlewareEffectReceipt"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "inputId": {
+            "type": "string"
+          },
+          "threadId": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "disposition",
+          "inputId",
+          "threadId"
+        ],
+        "title": "InputMiddlewareResolvedNotification",
+        "type": "object"
+      },
+      "InputMiddlewareUnavailablePolicy": {
+        "enum": [
+          "pass",
+          "reject"
+        ],
+        "type": "string"
       },
       "InputModality": {
         "description": "Canonical user-input modality tags advertised by a model.",

@@ -85,6 +85,9 @@ pub(crate) struct Session {
     pub(super) mcp_prewarm_shutdown: CancellationToken,
     pub(super) mcp_prewarm_task: std::sync::Mutex<Option<JoinHandle<()>>>,
     pub(crate) conversation: Arc<RealtimeConversationManager>,
+    pub(crate) human_input_middleware:
+        std::sync::RwLock<Option<tokio::sync::mpsc::Sender<crate::HumanInputMiddlewareRequest>>>,
+    pub(crate) admitted_human_inputs: Mutex<std::collections::HashSet<String>>,
     pub(crate) realtime_history: Option<Mutex<crate::realtime_history::RealtimeHistoryState>>,
     pub(crate) active_turn: Mutex<Option<ActiveTurn>>,
     pub(crate) async_hook_results: async_channel::Receiver<HookCompletedEvent>,
@@ -1780,6 +1783,8 @@ impl Session {
                 mcp_prewarm_shutdown: CancellationToken::new(),
                 mcp_prewarm_task: std::sync::Mutex::new(None),
                 conversation: Arc::new(RealtimeConversationManager::new()),
+                human_input_middleware: std::sync::RwLock::new(None),
+                admitted_human_inputs: Mutex::new(Default::default()),
                 realtime_history: (session_configuration.history_mode == ThreadHistoryMode::Paginated
                     && services.live_thread.is_some())
                 .then(|| Mutex::new(Default::default())),

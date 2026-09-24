@@ -888,6 +888,9 @@ impl MessageProcessor {
             );
         }
         self.outgoing.connection_closed(connection_id).await;
+        self.turn_processor
+            .input_middleware_connection_closed(connection_id)
+            .await;
         self.fs_processor.connection_closed(connection_id).await;
         self.command_exec_processor
             .connection_closed(connection_id)
@@ -1625,6 +1628,26 @@ impl MessageProcessor {
                         app_server_client_name.clone(),
                         client_version.clone(),
                     )
+                    .await
+            }
+            ClientRequest::InputMiddlewareAttach { params, .. } => {
+                self.turn_processor
+                    .input_middleware_attach(&request_id, params)
+                    .await
+            }
+            ClientRequest::InputMiddlewareDetach { params, .. } => {
+                self.turn_processor
+                    .input_middleware_detach(&request_id, params)
+                    .await
+            }
+            ClientRequest::InputMiddlewareRead { params, .. } => {
+                self.turn_processor
+                    .input_middleware_read(&request_id, params)
+                    .await
+            }
+            ClientRequest::InputMiddlewareComplete { params, .. } => {
+                self.turn_processor
+                    .input_middleware_complete(&request_id, params)
                     .await
             }
             ClientRequest::ThreadInjectItems { params, .. } => {
