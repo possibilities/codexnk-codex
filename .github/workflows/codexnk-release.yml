@@ -93,6 +93,13 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
+      - name: Install Linux sandbox build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
       - name: Build bundled Linux sandbox
         if: runner.os == 'Linux'
         shell: bash
