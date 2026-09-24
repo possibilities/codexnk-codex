@@ -3600,7 +3600,11 @@ impl PluginsManager {
         config: &PluginsConfigInput,
         roots: &[AbsolutePathBuf],
     ) -> Result<MarketplaceListOutcome, MarketplaceError> {
-        let mut outcome = list_marketplaces_with_home(roots, home_dir().as_deref())?;
+        let home = home_dir();
+        let mut outcome = list_marketplaces_with_home(
+            roots,
+            home_marketplace_root(&config.config_layer_stack, home.as_deref()),
+        )?;
         let policy = MarketplacePolicy::from_requirements(config.config_layer_stack.requirements());
         outcome.marketplaces.retain(|marketplace| {
             policy
@@ -3614,6 +3618,13 @@ impl PluginsManager {
         });
         Ok(outcome)
     }
+}
+
+fn home_marketplace_root<'a>(
+    config_layer_stack: &ConfigLayerStack,
+    home: Option<&'a Path>,
+) -> Option<&'a Path> {
+    home.filter(|_| !config_layer_stack.excludes_home_capabilities())
 }
 
 pub(crate) fn remote_plugin_install_required_description(

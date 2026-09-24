@@ -6,7 +6,9 @@
 //! at it. Sessions are linked from the history directory. Skills are copied
 //! from the capabilities directory, MCP servers and the prompt append are
 //! read from there, and `auth.json` is copied from the identity directory.
-//! CLI auth and MCP OAuth credentials stay in files under the runtime home.
+//! Project config is loaded under runtime-local trust; home-directory skills and
+//! plugin marketplaces are excluded. CLI auth and MCP OAuth credentials stay
+//! in files under the runtime home.
 
 use anyhow::Context;
 use std::collections::HashSet;
@@ -167,6 +169,9 @@ fn write_runtime_config(capabilities: &Path, codex_home: &Path) -> anyhow::Resul
             toml::from_str(&text).with_context(|| format!("parse {}", config_path.display()))?;
         if let Some(mcp_servers) = parsed.get("mcp_servers").cloned() {
             table.insert("mcp_servers".to_string(), mcp_servers);
+        }
+        if let Some(projects) = parsed.get("projects").cloned() {
+            table.insert("projects".to_string(), projects);
         }
     }
 

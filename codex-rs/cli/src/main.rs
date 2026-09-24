@@ -609,7 +609,7 @@ struct AppServerCommand {
     #[arg(long, value_name = "DIR")]
     identity: Option<PathBuf>,
 
-    /// Capability directory: `skills/`, `config.toml` `[mcp_servers]`, and `SYSTEM_APPEND.md`.
+    /// Capability directory: `skills/`, `config.toml` `[mcp_servers]`/`[projects]`, and `SYSTEM_APPEND.md`.
     #[arg(long, value_name = "DIR")]
     capabilities: Option<PathBuf>,
 
@@ -1255,7 +1255,7 @@ async fn cli_main(
                 let prepared = invocation_axes::prepare_invocation_axes(axes)?;
                 invocation_axes::apply_invocation_home(&prepared)?;
                 LoaderOverrides {
-                    ignore_project_config: true,
+                    exclude_home_capabilities: true,
                     ..LoaderOverrides::default()
                 }
             } else {
