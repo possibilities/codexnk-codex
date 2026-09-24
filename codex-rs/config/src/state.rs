@@ -54,6 +54,9 @@ pub struct LoaderOverrides {
     pub ignore_user_config: bool,
     /// Skip project-root discovery and all project configuration layers.
     pub ignore_project_config: bool,
+    /// Exclude capability roots discovered from the process user's home directory.
+    /// Explicit user config in CODEX_HOME and trusted project roots still apply.
+    pub exclude_home_capabilities: bool,
     pub ignore_user_and_project_exec_policy_rules: bool,
     //TODO(gt): Add a macos_ prefix to this field and remove the target_os check.
     #[cfg(target_os = "macos")]
@@ -78,6 +81,7 @@ impl LoaderOverrides {
             ignore_login_requirements: false,
             ignore_user_config: false,
             ignore_project_config: false,
+            exclude_home_capabilities: false,
             ignore_user_and_project_exec_policy_rules: false,
             #[cfg(target_os = "macos")]
             managed_preferences_base64: Some(String::new()),
@@ -267,6 +271,9 @@ pub struct ConfigLayerStack {
     /// Whether execpolicy should skip `.rules` files from user and project config-layer folders.
     ignore_user_and_project_exec_policy_rules: bool,
 
+    /// Whether home-directory skills and plugin marketplaces are omitted.
+    exclude_home_capabilities: bool,
+
     /// Startup warnings discovered while building this stack.
     ///
     /// `None` means the loader did not check for stack-level warnings, while
@@ -284,6 +291,7 @@ impl PartialEq for ConfigLayerStack {
             requirements,
             requirements_toml,
             ignore_user_and_project_exec_policy_rules,
+            exclude_home_capabilities,
             startup_warnings,
             is_projectless,
         } = self;
@@ -293,6 +301,7 @@ impl PartialEq for ConfigLayerStack {
             && requirements_toml == &other.requirements_toml
             && *ignore_user_and_project_exec_policy_rules
                 == other.ignore_user_and_project_exec_policy_rules
+            && *exclude_home_capabilities == other.exclude_home_capabilities
             && startup_warnings == &other.startup_warnings
             && is_projectless == &other.is_projectless
     }
@@ -316,6 +325,7 @@ impl ConfigLayerStack {
             requirements,
             requirements_toml,
             ignore_user_and_project_exec_policy_rules: false,
+            exclude_home_capabilities: false,
             startup_warnings: None,
             is_projectless: false,
         })
@@ -358,6 +368,15 @@ impl ConfigLayerStack {
         stack.requirements_toml.feature_requirements =
             incoming.requirements_toml.feature_requirements.clone();
         stack
+    }
+
+    pub fn without_home_capabilities(mut self) -> Self {
+        self.exclude_home_capabilities = true;
+        self
+    }
+
+    pub fn excludes_home_capabilities(&self) -> bool {
+        self.exclude_home_capabilities
     }
 
     pub(crate) fn with_startup_warnings(mut self, startup_warnings: Vec<String>) -> Self {
@@ -481,6 +500,7 @@ impl ConfigLayerStack {
             requirements_toml: self.requirements_toml.clone(),
             ignore_user_and_project_exec_policy_rules: self
                 .ignore_user_and_project_exec_policy_rules,
+            exclude_home_capabilities: self.exclude_home_capabilities,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
         })
@@ -518,6 +538,7 @@ impl ConfigLayerStack {
             requirements_toml: self.requirements_toml.clone(),
             ignore_user_and_project_exec_policy_rules: self
                 .ignore_user_and_project_exec_policy_rules,
+            exclude_home_capabilities: self.exclude_home_capabilities,
             startup_warnings: self.startup_warnings.clone(),
             is_projectless: self.is_projectless,
         }
