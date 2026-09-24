@@ -97,23 +97,65 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      - name: Build codex
+      - name: Install Linux sandbox build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - name: Build bundled Linux sandbox
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          cargo build --target "$TARGET" --release --bin bwrap
+          digest="$(sha256sum "${CARGO_TARGET_DIR}/${TARGET}/release/bwrap" | cut -d' ' -f1)"
+          echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
+
+      - name: Build Codex and code-mode host
         shell: bash
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
           STABLE_GIT_COMMIT: ${{ github.sha }}
-        run: cargo build --target "${{ matrix.target }}" --release --bin codex
+        run: cargo build --target "${{ matrix.target }}" --release --bin codex --bin codex-code-mode-host
 
       - name: Package
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          bin="${CARGO_TARGET_DIR}/${TARGET}/release/codex"
+          release_dir="${CARGO_TARGET_DIR}/${TARGET}/release"
           name="codex-${TARGET}"
-          mkdir -p "${GITHUB_WORKSPACE}/${name}"
-          cp "$bin" "${GITHUB_WORKSPACE}/${name}/codex"
+          package="${GITHUB_WORKSPACE}/${name}"
+          mkdir -p "$package/bin"
+          install -m 755 "$release_dir/codex" "$package/bin/codex"
+          install -m 755 "$release_dir/codex-code-mode-host" "$package/bin/codex-code-mode-host"
+          if [[ "$TARGET" == *linux* ]]; then
+            mkdir -p "$package/codex-resources"
+            install -m 755 "$release_dir/bwrap" "$package/codex-resources/bwrap"
+          fi
+          python3 - "$package/codex-package.json" "$TARGET" "$RELEASE_TAG" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          path, target, tag = sys.argv[1:]
+          Path(path).write_text(json.dumps({
+              "layoutVersion": 1,
+              "version": tag.removeprefix("codexnk-v"),
+              "target": target,
+              "variant": "codex",
+              "entrypoint": "bin/codex",
+              "resourcesDir": "codex-resources",
+              "pathDir": "codex-path",
+          }, indent=2) + "\n")
+          PY
           tar -C "${GITHUB_WORKSPACE}" -czf "${GITHUB_WORKSPACE}/${name}.tar.gz" "$name"
 
       - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
@@ -140,4 +182,4 @@ jobs:
           gh release create "${GITHUB_REF_NAME}" dist/*.tar.gz \
             --repo "${GITHUB_REPOSITORY}" \
             --title "${GITHUB_REF_NAME}" \
-            --notes "Patched Codex binary. Archives contain a \`codex\` executable."
+            --notes "Patched Codex runtime packages with a code-mode host and bundled Linux sandbox."
