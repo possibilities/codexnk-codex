@@ -12,6 +12,11 @@ on:
     tags:
       - "codexnk-v*"
   workflow_dispatch:
+    inputs:
+      macos_profile_benchmark:
+        description: Compare a macOS release build without LTO; never publish it
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -75,6 +80,7 @@ jobs:
           persist-credentials: false
 
       - uses: ./.github/actions/setup-ci
+        id: setup_ci
 
       - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
         with:
@@ -89,7 +95,15 @@ jobs:
         env:
           CARGO_NET_GIT_FETCH_WITH_CLI: "true"
           STABLE_GIT_COMMIT: ${{ github.sha }}
-        run: cargo build --target "${{ matrix.target }}" --release --bin codex
+        run: cargo build --target "${{ matrix.target }}" --release --timings --bin codex
+
+      - name: Upload Cargo timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-codexnk-${{ matrix.target }}
+          path: ${{ steps.setup_ci.outputs.cargo-target-dir }}/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
 
       - name: Package
         shell: bash
@@ -108,6 +122,59 @@ jobs:
           name: codex-${{ matrix.target }}
           path: codex-${{ matrix.target }}.tar.gz
 
+  benchmark-macos:
+    name: Benchmark macOS release without LTO (not published)
+    if: github.event_name == 'workflow_dispatch' && inputs.macos_profile_benchmark
+    runs-on: macos-15
+    env:
+      CARGO_PROFILE_RELEASE_LTO: "off"
+    defaults:
+      run:
+        working-directory: codex-rs
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-ci
+        id: setup_ci
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: aarch64-apple-darwin
+
+      - uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: aarch64-apple-darwin
+
+      - name: Build benchmark binaries
+        shell: bash
+        env:
+          STABLE_GIT_COMMIT: ${{ github.sha }}
+        run: cargo build --target aarch64-apple-darwin --release --timings --bin codex --bin codex-code-mode-host
+
+      - name: Record sizes and package benchmark binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          release_dir="${CARGO_TARGET_DIR}/aarch64-apple-darwin/release"
+          ls -lh "${release_dir}/codex" "${release_dir}/codex-code-mode-host"
+          tar -C "$release_dir" -czf "${GITHUB_WORKSPACE}/macos-no-lto-benchmark.tar.gz" codex codex-code-mode-host
+
+      - name: Upload benchmark binaries
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: macos-no-lto-benchmark
+          path: macos-no-lto-benchmark.tar.gz
+
+      - name: Upload benchmark timings
+        if: always()
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-macos-no-lto-benchmark
+          path: ${{ steps.setup_ci.outputs.cargo-target-dir }}/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+
   release:
     name: Publish GitHub Release
     needs: build
@@ -117,6 +184,7 @@ jobs:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
+          pattern: codex-*
           merge-multiple: true
 
       - name: Publish
