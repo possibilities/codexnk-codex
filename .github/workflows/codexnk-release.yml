@@ -127,6 +127,14 @@ jobs:
           digest="$(sha256sum "${CARGO_TARGET_DIR}/${TARGET}/release/bwrap" | cut -d' ' -f1)"
           echo "CODEX_BWRAP_SHA256=$digest" >> "$GITHUB_ENV"
 
+      # Preserve thin LTO while allowing the large macOS crates to codegen in
+      # parallel. The opt-in release-profile benchmark measured this setting
+      # against the default four codegen units before shipping it.
+      - name: Configure macOS release codegen
+        if: runner.os == 'macOS'
+        shell: bash
+        run: echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8" >> "$GITHUB_ENV"
+
       - name: Build Codex and code-mode host
         shell: bash
         env:
