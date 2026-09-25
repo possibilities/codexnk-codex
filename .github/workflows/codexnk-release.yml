@@ -95,14 +95,6 @@ jobs:
         with:
           target: ${{ matrix.target }}
 
-      # Preserve thin LTO while allowing the large macOS crates to codegen in
-      # parallel. The opt-in release-profile benchmark measured this setting
-      # against the default four codegen units before shipping it.
-      - name: Configure macOS release codegen
-        if: runner.os == 'macOS'
-        shell: bash
-        run: echo "CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8" >> "$GITHUB_ENV"
-
       - name: Build codex
         shell: bash
         env:
