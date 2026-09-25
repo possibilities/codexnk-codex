@@ -14,9 +14,13 @@ on:
   workflow_dispatch:
     inputs:
       macos_profile_benchmark:
-        description: Compare a macOS release build without LTO; never publish it
-        type: boolean
-        default: false
+        description: Choose a macOS release profile to benchmark without publishing
+        type: choice
+        options:
+          - none
+          - no-lto
+          - cgu-16
+        default: none
 
 permissions:
   contents: write
@@ -178,13 +182,14 @@ jobs:
           path: codex-${{ matrix.target }}.tar.gz
 
   benchmark-macos:
-    name: Benchmark macOS release without LTO (not published)
-    if: github.event_name == 'workflow_dispatch' && inputs.macos_profile_benchmark
+    name: Benchmark macOS release (${{ inputs.macos_profile_benchmark }}, not published)
+    if: github.event_name == 'workflow_dispatch' && inputs.macos_profile_benchmark != 'none'
     runs-on: macos-15
     permissions:
       contents: read
     env:
-      CARGO_PROFILE_RELEASE_LTO: "off"
+      CARGO_PROFILE_RELEASE_LTO: ${{ inputs.macos_profile_benchmark == 'no-lto' && 'off' || 'thin' }}
+      CARGO_PROFILE_RELEASE_CODEGEN_UNITS: ${{ inputs.macos_profile_benchmark == 'cgu-16' && '16' || '4' }}
     defaults:
       run:
         working-directory: codex-rs
@@ -212,23 +217,25 @@ jobs:
 
       - name: Record sizes and package benchmark binaries
         shell: bash
+        env:
+          BENCHMARK_PROFILE: ${{ inputs.macos_profile_benchmark }}
         run: |
           set -euo pipefail
           release_dir="${CARGO_TARGET_DIR}/aarch64-apple-darwin/release"
           ls -lh "${release_dir}/codex" "${release_dir}/codex-code-mode-host"
-          tar -C "$release_dir" -czf "${GITHUB_WORKSPACE}/macos-no-lto-benchmark.tar.gz" codex codex-code-mode-host
+          tar -C "$release_dir" -czf "${GITHUB_WORKSPACE}/macos-${BENCHMARK_PROFILE}-benchmark.tar.gz" codex codex-code-mode-host
 
       - name: Upload benchmark binaries
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: macos-no-lto-benchmark
-          path: macos-no-lto-benchmark.tar.gz
+          name: macos-${{ inputs.macos_profile_benchmark }}-benchmark
+          path: macos-${{ inputs.macos_profile_benchmark }}-benchmark.tar.gz
 
       - name: Upload benchmark timings
         if: always()
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
         with:
-          name: cargo-timings-macos-no-lto-benchmark
+          name: cargo-timings-macos-${{ inputs.macos_profile_benchmark }}-benchmark
           path: ${{ steps.setup_ci.outputs.cargo-target-dir }}/**/cargo-timings/cargo-timing.html
           if-no-files-found: warn
 
