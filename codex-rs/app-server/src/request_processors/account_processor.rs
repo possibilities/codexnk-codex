@@ -999,7 +999,13 @@ impl AccountRequestProcessor {
             .config_manager
             .load_latest_config(/*fallback_cwd*/ None)
             .await;
-        let scope = ema_auth_scope(self.auth_manager.auth_cached().as_ref());
+        // The immutable launch boundary also applies when current policy fails
+        // to load or XAA has since been disabled. Scoped processes own no grants.
+        let scope = if self.config.config_layer_stack.excludes_home_capabilities() {
+            None
+        } else {
+            ema_auth_scope(self.auth_manager.auth_cached().as_ref())
+        };
         let enterprise_policy_failed = scope.is_some() && config.is_err();
         // Startup policy may belong to another workspace. Never use that fallback
         // to select a credential; a policy failure must not block primary logout.

@@ -20,6 +20,65 @@ use tempfile::tempdir;
 
 pub(super) struct TestFileSystem;
 
+#[tokio::test]
+async fn scoped_capabilities_keep_trusted_project_mcp_without_home_config() {
+    let temp = tempdir().expect("tempdir");
+    let runtime = temp.path().join("runtime");
+    let project = temp.path().join("project");
+    let project_config = project.join(".codex");
+    std::fs::create_dir_all(&runtime).expect("runtime home");
+    std::fs::create_dir_all(&project_config).expect("project config");
+    std::fs::create_dir_all(project.join(".git")).expect("project marker");
+    let trust_key = TomlValue::String(project_trust_key(&project)).to_string();
+    let trusted_config = format!(
+        "[projects.{trust_key}]\ntrust_level = 'trusted'\n\
+         [mcp_servers.selected]\ncommand = 'selected-server'\n"
+    );
+    let runtime_config = runtime.join(CONFIG_TOML_FILE);
+    std::fs::write(&runtime_config, &trusted_config).expect("runtime config");
+    std::fs::write(
+        project_config.join(CONFIG_TOML_FILE),
+        "[mcp_servers.project]\ncommand = 'project-server'\n",
+    )
+    .expect("project config");
+
+    let mut overrides = LoaderOverrides::without_managed_config_for_tests();
+    overrides.exclude_home_capabilities = true;
+    let cwd = AbsolutePathBuf::from_absolute_path(&project).expect("absolute project");
+    let load = || {
+        load_config_layers_state(
+            &TestFileSystem,
+            &runtime,
+            Some(cwd.clone()),
+            &[],
+            ConfigLoadOptions::from(overrides.clone()),
+            &crate::NoopThreadConfigLoader,
+        )
+    };
+    let stack = load().await.expect("trusted project config");
+    assert!(stack.excludes_home_capabilities());
+    let servers = stack.effective_config()["mcp_servers"].clone();
+    assert!(servers.get("selected").is_some());
+    assert!(servers.get("project").is_some());
+
+    std::fs::write(
+        &runtime_config,
+        "[mcp_servers.selected]\ncommand = 'selected-server'\n",
+    )
+    .expect("remove runtime trust");
+    let untrusted = load().await.expect("untrusted project config");
+    assert!(
+        untrusted.effective_config()["mcp_servers"]
+            .get("selected")
+            .is_some()
+    );
+    assert!(
+        untrusted.effective_config()["mcp_servers"]
+            .get("project")
+            .is_none()
+    );
+}
+
 #[test]
 fn project_config_cannot_override_configured_credential_broker_hosts() {
     let mut config: TomlValue = toml::from_str(
