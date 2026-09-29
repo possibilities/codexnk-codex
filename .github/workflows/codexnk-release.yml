@@ -62,6 +62,8 @@ jobs:
           just test -p codex-config scoped_capabilities_keep_trusted_project_mcp_without_home_config
           just test -p codex-skills-extension scoped_capabilities_keep_project_skills_without_home_skills
           just test -p codex-core-plugins scoped_capabilities_omit_home_marketplace_but_keep_project_marketplace
+          just test -p codex-core invocation_axes
+          just test -p codex-app-server invocation_axes
 
   build:
     name: Build ${{ matrix.target }}
