@@ -14,8 +14,8 @@ async fn invocation_axes_reject_enterprise_login_and_logout_without_keyring() ->
         let oauth_server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/oauth/revoke"))
-            .respond_with(ResponseTemplate::new(200))
-            .expect(2)
+            .respond_with(ResponseTemplate::new(/*s*/ 200))
+            .expect(/*r*/ 2)
             .mount(&oauth_server)
             .await;
         let output = Command::new(std::env::current_exe()?)
@@ -45,7 +45,7 @@ async fn invocation_axes_reject_enterprise_login_and_logout_without_keyring() ->
         return Ok(());
     }
 
-    let keyring_attempts = Arc::new(AtomicUsize::new(0));
+    let keyring_attempts = Arc::new(AtomicUsize::new(/*v*/ 0));
     keyring::set_default_credential_builder(Box::new(CountingKeyring(Arc::clone(
         &keyring_attempts,
     ))));
@@ -56,7 +56,7 @@ async fn invocation_axes_reject_enterprise_login_and_logout_without_keyring() ->
         Mock::given(method("GET"))
             .and(path("/backend-api/wham/config/bundle"))
             .respond_with(
-                ResponseTemplate::new(200)
+                ResponseTemplate::new(/*s*/ 200)
                     .set_body_json(CloudConfigBundleFixture::default().into_bundle()),
             )
             .mount(&server)
@@ -165,7 +165,7 @@ oauth = {{ client_id = "mcp-client", authorization_server_issuer = "{origin}/as"
             reloaded_error,
             logout,
             home.path().join("auth.json").exists(),
-            keyring_attempts.swap(0, Ordering::SeqCst),
+            keyring_attempts.swap(/*val*/ 0, Ordering::SeqCst),
         ));
     }
     let denial = "mcpServer/oauth/login: enterprise MCP authentication is unavailable with invocation axes because it requires OS keyring storage".to_string();
@@ -185,7 +185,7 @@ impl CredentialBuilderApi for CountingKeyring {
         _service: &str,
         _user: &str,
     ) -> keyring::Result<Box<Credential>> {
-        self.0.fetch_add(1, Ordering::SeqCst);
+        self.0.fetch_add(/*val*/ 1, Ordering::SeqCst);
         // Count even failed attempts; no platform credential is ever constructed.
         Err(keyring::Error::NoEntry)
     }
