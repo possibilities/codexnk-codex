@@ -62,6 +62,33 @@ async fn apply_role_defaults_to_default_and_leaves_config_unchanged() {
 }
 
 #[tokio::test]
+async fn invocation_axes_survive_agent_role_application() {
+    let (home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
+    config.config_layer_stack = config.config_layer_stack.without_home_capabilities();
+    let role_path = write_role_config(&home, "scoped-role.toml", "model = 'role-model'").await;
+    config.agent_roles.insert(
+        "scoped".to_string(),
+        AgentRoleConfig {
+            config_file: Some(role_path),
+            ..Default::default()
+        },
+    );
+    apply_role_to_config(&mut config, Some("scoped"))
+        .await
+        .unwrap();
+    assert_eq!(
+        (
+            config.model.as_deref(),
+            config
+                .plugins_config_input()
+                .config_layer_stack
+                .excludes_home_capabilities()
+        ),
+        (Some("role-model"), true)
+    );
+}
+
+#[tokio::test]
 async fn apply_role_returns_error_for_unknown_role() {
     let (_home, mut config) = test_config_with_cli_overrides(Vec::new()).await;
 

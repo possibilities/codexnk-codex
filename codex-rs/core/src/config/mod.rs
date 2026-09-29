@@ -165,6 +165,9 @@ use toml_edit::DocumentMut;
 
 mod auth_keyring;
 pub mod edit;
+#[cfg(test)]
+#[path = "invocation_axes_tests.rs"]
+mod invocation_axes_tests;
 mod managed_features;
 mod metrics;
 mod network_config;
