@@ -1793,9 +1793,12 @@ impl Config {
         additional_plugin_registrations: impl IntoIterator<Item = McpServerRegistration>,
     ) -> McpConfig {
         let mut catalog = ResolvedMcpCatalog::builder();
-        if self.features.enabled(Feature::UseXaa)
-            && let Some(auth) = &self.mcp_enterprise_managed_auth
-        {
+        // Enterprise grants currently require keyring authority. Managed feature
+        // enablement must not override this process's file-only launch boundary.
+        let xaa_enabled = self.features.enabled(Feature::UseXaa)
+            && !self.config_layer_stack.excludes_home_capabilities()
+            && self.mcp_enterprise_managed_auth.is_some();
+        if xaa_enabled && let Some(auth) = &self.mcp_enterprise_managed_auth {
             catalog.enable_ema(auth.idp.clone());
         }
         for (plugin_order, plugin) in loaded_plugins
@@ -1843,8 +1846,7 @@ impl Config {
             requires_read_only_mcp_tools: false,
             codex_home: self.codex_home.to_path_buf(),
             mcp_enterprise_managed_auth: self.mcp_enterprise_managed_auth.clone(),
-            xaa_enabled: self.features.enabled(Feature::UseXaa)
-                && self.mcp_enterprise_managed_auth.is_some(),
+            xaa_enabled,
             mcp_oauth_credentials_store_mode: self.mcp_oauth_credentials_store_mode,
             oauth_refresh_mode: if self.features.enabled(Feature::McpOAuthRefreshCoordination) {
                 McpOAuthRefreshMode::Coordinated
@@ -1964,7 +1966,7 @@ impl Config {
         );
         layers.sort_by_key(|layer| layer.name.precedence());
 
-        Ok(ConfigLayerStack::new(
+        let mut stack = ConfigLayerStack::new(
             layers,
             refreshed_layers.requirements().clone(),
             refreshed_layers.requirements_toml().clone(),
@@ -1972,7 +1974,13 @@ impl Config {
         .with_cloud_config_binding(refreshed_layers.cloud_config_binding().cloned())
         .with_user_and_project_exec_policy_rules_ignored(
             refreshed_layers.ignore_user_and_project_exec_policy_rules(),
-        ))
+        );
+        if session_layers.excludes_home_capabilities()
+            || refreshed_layers.excludes_home_capabilities()
+        {
+            stack = stack.without_home_capabilities();
+        }
+        Ok(stack)
     }
 
     /// This is the preferred way to create an instance of [Config].
@@ -3302,6 +3310,20 @@ impl Config {
             config_layer_stack.requirements(),
             &mut startup_warnings,
         );
+        // Apply the launch boundary before constructing either bootstrap or final
+        // auth managers, including configurations rebuilt without the user file.
+        if config_layer_stack.excludes_home_capabilities() {
+            if config_layer_stack.requirements().cli_auth_credentials_store.as_ref()
+                .is_some_and(|required| required.value != AuthCredentialsStoreMode::File)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::PermissionDenied,
+                    "invocation axes require file credential storage, incompatible with managed cli_auth_credentials_store",
+                ));
+            }
+            cfg.cli_auth_credentials_store = Some(AuthCredentialsStoreMode::File);
+            cfg.mcp_oauth_credentials_store = Some(OAuthCredentialsStoreMode::File);
+        }
         // Destructure every field to ensure ConfigRequirements additions are
         // either applied above or handled while constructing the final Config.
         let ConfigRequirements {
@@ -3858,6 +3880,13 @@ impl Config {
                 std::io::Error::new(std::io::ErrorKind::NotFound, message)
             })?
             .clone();
+
+        if config_layer_stack.excludes_home_capabilities() && model_provider.gateway_oauth.is_some() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "model-provider gateway OAuth is unavailable with invocation axes because it requires OS keyring storage",
+            ));
+        }
 
         let shell_environment_policy = ShellEnvironmentPolicy::from(cfg.shell_environment_policy);
         let allow_login_shell = cfg.allow_login_shell.unwrap_or(true);

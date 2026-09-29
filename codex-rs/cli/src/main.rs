@@ -1279,7 +1279,10 @@ async fn cli_main(
             } else {
                 LoaderOverrides::default()
             };
-            let strict_config = app_server_strict_config || root_strict_config;
+            // Falling back after a scoped policy conflict could discard a managed
+            // credential requirement rather than refusing the incompatible launch.
+            let strict_config =
+                app_server_strict_config || root_strict_config || invocation_axes.is_some();
             reject_strict_config_for_app_server_subcommand(strict_config, subcommand.as_ref())?;
             reject_remote_mode_for_app_server_subcommand(
                 root_remote.as_deref(),
