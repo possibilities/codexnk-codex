@@ -20,6 +20,8 @@ async fn app_server_flags_load_selected_and_project_skills_without_prior_codex_h
     let capabilities = tempfile::tempdir()?;
     let history = tempfile::tempdir()?;
     let project = tempfile::tempdir()?;
+    let identity_auth = br#"{"OPENAI_API_KEY":"scoped-identity-key"}"#;
+    fs::write(identity.path().join("auth.json"), identity_auth)?;
     fs::create_dir_all(project.path().join(".git"))?;
     let project_key =
         toml::Value::String(project.path().to_string_lossy().into_owned()).to_string();
@@ -58,6 +60,7 @@ async fn app_server_flags_load_selected_and_project_skills_without_prior_codex_h
         .with_program(&codex)
         .with_codex_home(original_home.path())
         .without_auto_env()
+        .with_env_overrides(&[("OPENAI_API_KEY", None), ("CODEX_API_KEY", None)])
         .with_plugin_startup_tasks()
         .with_args(&[
             "app-server",
@@ -67,6 +70,10 @@ async fn app_server_flags_load_selected_and_project_skills_without_prior_codex_h
             capabilities.path().to_str().expect("capabilities path"),
             "--history-dir",
             history.path().to_str().expect("history path"),
+            "-c",
+            "cli_auth_credentials_store='ephemeral'",
+            "-c",
+            "mcp_oauth_credentials_store='keyring'",
         ])
         .build_initialized()
         .await?;
@@ -133,6 +140,19 @@ async fn app_server_flags_load_selected_and_project_skills_without_prior_codex_h
         .and_then(Path::parent)
         .expect("runtime home")
         .to_path_buf();
+    let request_id = app_server
+        .send_raw_request(
+            "account/read",
+            Some(serde_json::json!({"refreshToken": false})),
+        )
+        .await?;
+    let account: serde_json::Value = app_server.read_response(request_id).await?;
+    assert_eq!(account["account"], serde_json::json!({"type": "apiKey"}));
+    let request_id = app_server.send_logout_account_request().await?;
+    let _: codex_app_server_protocol::LogoutAccountResponse =
+        app_server.read_response(request_id).await?;
+    assert!(!runtime_home.join("auth.json").exists());
+    assert_eq!(fs::read(identity.path().join("auth.json"))?, identity_auth);
     drop(app_server);
     for name in ["sessions", "archived_sessions"] {
         #[cfg(windows)]

@@ -57,6 +57,37 @@ fn runtime_servers(config: &Config) -> HashMap<String, McpServerConfig> {
     )
 }
 
+#[tokio::test]
+async fn invocation_axes_survive_retained_session_and_mcp_refresh() {
+    let (_home, base) = base_config().await;
+    let enterprise = enterprise_config("https://idp.example", "resource");
+    let mut current = layered_config(&base, &enterprise, "", "use_xaa = true", "").await;
+    current.config_layer_stack = current.config_layer_stack.without_home_capabilities();
+    let incoming = layered_config(&base, &enterprise, "", "use_xaa = true", "").await;
+    let rebuilt = Config::rebuild_with_session_layers(
+        &current.config_layer_stack,
+        current.cwd.to_path_buf(),
+        &incoming.config_layer_stack,
+        current.codex_home.clone(),
+        /*default_zsh_path*/ None,
+    )
+    .await
+    .unwrap();
+    let refreshed = current
+        .resolve_runtime_refresh(&incoming, RuntimeConfigRefresh::Mcp)
+        .unwrap();
+    for config in [rebuilt, refreshed] {
+        let runtime = config.to_mcp_config_with_loaded_plugins(&PluginLoadOutcome::default(), []);
+        assert_eq!(
+            (
+                runtime.xaa_enabled,
+                runtime.config_layer_stack.excludes_home_capabilities()
+            ),
+            (false, true)
+        );
+    }
+}
+
 #[test_case::test_case(RuntimeConfigRefresh::User; "user refresh")]
 #[test_case::test_case(RuntimeConfigRefresh::Mcp; "MCP refresh")]
 #[tokio::test]
