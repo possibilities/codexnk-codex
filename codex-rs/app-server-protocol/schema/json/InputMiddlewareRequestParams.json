@@ -1,0 +1,34 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "InputMiddlewareOrigin": {
+      "enum": [
+        "client",
+        "realtime"
+      ],
+      "type": "string"
+    }
+  },
+  "properties": {
+    "inputId": {
+      "type": "string"
+    },
+    "origin": {
+      "$ref": "#/definitions/InputMiddlewareOrigin"
+    },
+    "text": {
+      "type": "string"
+    },
+    "threadId": {
+      "type": "string"
+    }
+  },
+  "required": [
+    "inputId",
+    "origin",
+    "text",
+    "threadId"
+  ],
+  "title": "InputMiddlewareRequestParams",
+  "type": "object"
+}
