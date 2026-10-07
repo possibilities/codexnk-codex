@@ -132,8 +132,11 @@ async fn app_server_flags_load_selected_and_project_skills_without_prior_codex_h
         .iter()
         .find(|skill| skill.name == "selected-skill")
         .expect("selected skill");
-    let runtime_home = selected
+    let selected_path = selected
         .path
+        .to_inferred_abs_path()
+        .expect("host skill path");
+    let runtime_home = selected_path
         .as_path()
         .parent()
         .and_then(Path::parent)
