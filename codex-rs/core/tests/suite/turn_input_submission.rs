@@ -127,6 +127,17 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
         anyhow::bail!("first input must start a turn");
     };
     assert_eq!(root_turn_id, "causal-root");
+    let attribution = wait_for_event_match(&thread, |event| match event {
+        EventMsg::TurnStarted(started) => Some(started.turn_attribution.clone()),
+        _ => None,
+    }).await;
+    assert_eq!(attribution, Some(TurnAttribution {
+        turn_id: turn_id.clone(),
+        turn_trigger: None,
+        parent_turn_id: Some("parent".into()),
+        initiating_agent_path: None,
+        root_turn_id: Some("causal-root".into()),
+    }));
     server.wait_for_request_count(/*count*/ 1).await;
     assert_eq!(
         thread.current_turn_extension_data::<String>(&turn_id).await,

@@ -1838,7 +1838,7 @@ async fn handle_start_inner(
         {
             let _permit = route_handoffs.gate.acquire().await;
             if !route_handoffs.retired.load(Ordering::Acquire)
-                && let Err(err) = transcript_tail::record(
+                && let Err(err) = transcript_tail::admit_and_record(
                     &sess_clone,
                     text,
                     format!("{sub_id}:tail"),

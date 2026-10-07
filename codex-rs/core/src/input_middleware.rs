@@ -109,7 +109,12 @@ pub(crate) async fn admit(
         text: text.clone(),
     };
     let decision = if owner
-        .send(HumanInputMiddlewareRequest { candidate, reply, committed, stored })
+        .send(HumanInputMiddlewareRequest {
+            candidate,
+            reply,
+            committed,
+            stored,
+        })
         .await
         .is_ok()
     {
@@ -135,7 +140,9 @@ pub(crate) async fn admit(
                 let _ = storage_ack.await;
                 return Err(NotSubmittedReason::InputMiddlewareUnavailable);
             }
-            let _ = commit_sender.send(HumanInputCommit::Replace { text: replacement.clone() });
+            let _ = commit_sender.send(HumanInputCommit::Replace {
+                text: replacement.clone(),
+            });
             if !matches!(storage_ack.await, Ok(true)) {
                 return Err(NotSubmittedReason::InputMiddlewareUnavailable);
             }
@@ -148,7 +155,10 @@ pub(crate) async fn admit(
             if !matches!(storage_ack.await, Ok(true)) {
                 return Err(NotSubmittedReason::InputMiddlewareUnavailable);
             }
-            return Err(NotSubmittedReason::InputIntercepted { input_id, operation_id });
+            return Err(NotSubmittedReason::InputIntercepted {
+                input_id,
+                operation_id,
+            });
         }
         HumanInputDecision::Reject => {
             let _ = commit_sender.send(HumanInputCommit::Reject);
