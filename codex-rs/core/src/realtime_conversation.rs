@@ -1838,11 +1838,9 @@ async fn handle_start_inner(
         {
             let _permit = route_handoffs.gate.acquire().await;
             if !route_handoffs.retired.load(Ordering::Acquire)
-                && let Err(err) = transcript_tail::admit_and_record(
-                    &sess_clone,
-                    text,
-                    format!("{sub_id}:tail"),
-                ).await
+                && let Err(err) =
+                    transcript_tail::admit_and_record(&sess_clone, text, format!("{sub_id}:tail"))
+                        .await
             {
                 warn!("failed to flush realtime transcript before closure: {err}");
                 handoff_error = Some("failed to save the realtime transcript before closure");
