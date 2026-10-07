@@ -247,7 +247,7 @@ impl CodexThread {
             .session
             .human_input_middleware
             .write()
-            .expect("human-input middleware lock poisoned") = sender;
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = sender;
     }
 
     /// Rehydrates source identities durably recorded by the app-server before
