@@ -228,7 +228,10 @@ pub(super) async fn handle(
     mode: TurnInputMode,
     submission_id: String,
 ) -> CodexResult<TurnInputSubmission> {
-    let request = request.into();
+    let mut request = request.into();
+    if let Err(reason) = crate::input_middleware::admit(session, &mut request.request).await {
+        return Ok(TurnInputSubmission::NotSubmitted { reason });
+    }
     let result = match mode {
         TurnInputMode::StartOrSteer => start_or_steer(session, request, submission_id).await,
         TurnInputMode::StartIfIdle => {
@@ -693,6 +696,7 @@ impl Session {
     pub(crate) async fn route_realtime_text_input(
         self: &Arc<Self>,
         text: String,
+        source_id: String,
     ) -> Result<(), &'static str> {
         let submission_id = Uuid::now_v7().to_string();
         let submission = handle(
@@ -701,6 +705,10 @@ impl Session {
                 text,
                 text_elements: Vec::new(),
             }])
+            .with_human_input_source(codex_protocol::turn_input::HumanInputSource {
+                id: source_id,
+                realtime: true,
+            })
             .on_start(TurnStartOptions {
                 turn_trigger: Some("realtime".to_string()),
                 ..Default::default()
@@ -711,6 +719,9 @@ impl Session {
         .await;
         match submission {
             Ok(TurnInputSubmission::Started { .. } | TurnInputSubmission::Steered { .. }) => {}
+            Ok(TurnInputSubmission::NotSubmitted {
+                reason: NotSubmittedReason::InputIntercepted { .. },
+            }) => {}
             Ok(TurnInputSubmission::NotSubmitted {
                 reason: NotSubmittedReason::ServerDraining,
             }) => {
