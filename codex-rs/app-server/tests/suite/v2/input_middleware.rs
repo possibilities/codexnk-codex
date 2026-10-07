@@ -184,7 +184,13 @@ async fn replacement_is_the_text_delivered_to_the_agent() -> Result<()> {
         .start_thread(ThreadStartParams::default())
         .await?;
     attach(&mut app_server, &thread.id).await?;
-    let original_request = submit(&mut app_server, &thread.id).await?;
+    let original_request = app_server.send_request("turn/start", Some(json!({
+        "threadId": thread.id,
+        "clientUserMessageId": "middleware-lineage",
+        "parentTurnId": "initiating-turn",
+        "rootTurnId": "causal-root",
+        "input": [{"type":"text", "text":"Original prompt", "text_elements":[]}]
+    }))).await?;
     let request = app_server.read_stream_until_request_message().await?;
     let ServerRequest::InputMiddlewareRequest { request_id, params } = request else {
         panic!("expected input middleware request: {request:?}");
@@ -201,6 +207,7 @@ async fn replacement_is_the_text_delivered_to_the_agent() -> Result<()> {
         .read_stream_until_notification_message("turn/completed")
         .await?;
     assert!(!response.turn.id.is_empty());
+    assert_eq!(response.turn.root_turn_id.as_deref(), Some("causal-root"));
     let request = response_mock.single_request();
     assert!(
         request

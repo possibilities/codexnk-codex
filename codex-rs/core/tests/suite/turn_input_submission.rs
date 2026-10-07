@@ -30,6 +30,7 @@ use codex_protocol::protocol::ThreadSettingsOverrides;
 use codex_protocol::protocol::TurnEnvironmentRequests;
 use codex_protocol::protocol::TurnEnvironmentSelections;
 use codex_protocol::turn_input::TurnAttribution;
+use codex_protocol::turn_input::HumanInputSource;
 use codex_protocol::user_input::UserInput;
 use core_test_support::responses;
 use core_test_support::responses::ev_completed;
@@ -89,27 +90,76 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
         })
         .await?
         .thread;
-    let TurnInputSubmission::Started { turn_id, .. } =
-        submit_user_message(&thread, "start").await?
+    // Exercise the public middleware boundary: admission must not flatten the
+    // per-submission extension wrapper or adopt the steering request's lineage.
+    let (sender, mut receiver) = tokio::sync::mpsc::channel::<codex_core::HumanInputMiddlewareRequest>(4);
+    thread.set_human_input_middleware(Some(sender));
+    let middleware = tokio::spawn(async move {
+        while let Some(request) = receiver.recv().await {
+            let decision = if request.candidate.text == "intercept" {
+                codex_core::HumanInputDecision::Intercept { operation_id: "external".into() }
+            } else {
+                codex_core::HumanInputDecision::Replace(format!("admitted {}", request.candidate.text))
+            };
+            request.reply.send(decision).expect("admission receiver");
+            request.committed.await.expect("Core commitment");
+            request.stored.send(true).expect("storage acknowledgment receiver");
+        }
+    });
+    let mut start_data = ExtensionDataInit::new();
+    start_data.insert("submitted".to_owned());
+    let TurnInputSubmission::Started { turn_id, root_turn_id } =
+        thread.start_or_steer_turn(WithTurnExtensionData::new(
+            user_message_request("start")
+                .with_human_input_source(HumanInputSource { id: "start".into(), realtime: false })
+                .on_start(TurnStartOptions {
+                    parent_turn_id: Some("parent".into()),
+                    root_turn_id: Some("causal-root".into()),
+                    ..Default::default()
+                }),
+            start_data,
+        )).await?
     else {
         anyhow::bail!("first input must start a turn");
     };
+    assert_eq!(root_turn_id, "causal-root");
     server.wait_for_request_count(/*count*/ 1).await;
     assert_eq!(
         thread.current_turn_extension_data::<String>(&turn_id).await,
-        Some(Arc::new("original".to_owned()))
+        Some(Arc::new("submitted".to_owned()))
+    );
+    let mut intercepted = ExtensionDataInit::new();
+    intercepted.insert("intercepted".to_owned());
+    assert_eq!(
+        thread.start_or_steer_turn(WithTurnExtensionData::new(
+            user_message_request("intercept").with_human_input_source(HumanInputSource {
+                id: "intercept".into(), realtime: false,
+            }),
+            intercepted,
+        )).await?,
+        TurnInputSubmission::NotSubmitted {
+            reason: NotSubmittedReason::InputIntercepted {
+                input_id: "client:intercept".into(), operation_id: "external".into(),
+            },
+        },
+    );
+    assert_eq!(
+        thread.config_snapshot().await.turn_extension_init.get::<String>(),
+        Some(Arc::new("submitted".to_owned())),
     );
     let mut next = ExtensionDataInit::new();
     next.insert("next".to_owned());
     assert_eq!(
         thread
             .start_or_steer_turn(WithTurnExtensionData::new(
-                user_message_request("steer"),
+                user_message_request("steer")
+                    .with_human_input_source(HumanInputSource { id: "steer".into(), realtime: false })
+                    .on_start(TurnStartOptions { root_turn_id: Some("steering-root".into()), ..Default::default() }),
                 next
             ))
             .await?,
         TurnInputSubmission::Steered {
-            root_turn_id: turn_id.clone(),
+            root_turn_id: "causal-root".into(),
             turn_id: turn_id.clone()
         }
     );
@@ -118,7 +168,8 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
     assert_eq!(
         thread
             .steer_turn(
-                WithTurnExtensionData::new(user_message_request("wrong turn"), rejected),
+                WithTurnExtensionData::new(user_message_request("wrong turn")
+                    .with_human_input_source(HumanInputSource { id: "wrong-turn".into(), realtime: false }), rejected),
                 "another-turn".to_owned(),
             )
             .await?,
@@ -131,7 +182,7 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
     );
     assert_eq!(
         thread.current_turn_extension_data::<String>(&turn_id).await,
-        Some(Arc::new("original".to_owned()))
+        Some(Arc::new("submitted".to_owned()))
     );
     assert_eq!(
         thread
@@ -198,6 +249,8 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
         .expect("automatic response is waiting");
     wait_for_event(&thread, |event| matches!(event, EventMsg::TurnComplete(_))).await;
     assert_eq!(server.requests().await.len(), 3);
+    thread.set_human_input_middleware(None);
+    middleware.await?;
     server.shutdown().await;
     Ok(())
 }
