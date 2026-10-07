@@ -5,6 +5,7 @@ use codex_app_server_protocol::InputMiddlewareRecord;
 use codex_protocol::ThreadId;
 use std::collections::HashMap;
 use std::io;
+use std::io::Read;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
@@ -35,11 +36,17 @@ pub(crate) fn path_for_rollout(rollout: &Path, thread_id: ThreadId) -> io::Resul
 
 pub(crate) async fn load(path: PathBuf) -> io::Result<HashMap<String, InputMiddlewareRecord>> {
     tokio::task::spawn_blocking(move || {
-        let bytes = match std::fs::read(path) {
-            Ok(bytes) => bytes,
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
             Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(HashMap::new()),
             Err(error) => return Err(error),
         };
+        if file.metadata()?.len() > MAX_JOURNAL_BYTES {
+            return Err(io::Error::other("input middleware journal too large"));
+        }
+        let mut bytes = Vec::new();
+        // Bound the read too, in case the file grows after the metadata check.
+        file.take(MAX_JOURNAL_BYTES + 1).read_to_end(&mut bytes)?;
         if bytes.len() as u64 > MAX_JOURNAL_BYTES {
             return Err(io::Error::other("input middleware journal too large"));
         }
@@ -76,6 +83,11 @@ pub(crate) async fn append(path: PathBuf, record: &InputMiddlewareRecord) -> io:
             options.mode(0o600);
         }
         let mut file = options.open(path)?;
+        // The caller serializes disposition and receipt appends under the same
+        // resolution lock. Never acknowledge a record that replay cannot load.
+        if file.metadata()?.len().saturating_add(line.len() as u64) > MAX_JOURNAL_BYTES {
+            return Err(io::Error::other("input middleware journal is full"));
+        }
         file.write_all(&line)?;
         file.sync_all()
     })

@@ -26,10 +26,13 @@ use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
 use codex_app_server_protocol::TurnStartResponse;
 use core_test_support::responses;
-use pretty_assertions::assert_eq;
 use serde_json::json;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
 use tempfile::TempDir;
-use test_macros::test_matrix;
+use test_case::test_matrix;
+use pretty_assertions::assert_eq;
 
 async fn attach(
     app_server: &mut TestAppServer,
@@ -187,18 +190,13 @@ async fn replacement_is_the_text_delivered_to_the_agent() -> Result<()> {
         .start_thread(ThreadStartParams::default())
         .await?;
     attach(&mut app_server, &thread.id).await?;
-    let original_request = app_server
-        .send_request(
-            "turn/start",
-            Some(json!({
-                "threadId": thread.id,
-                "clientUserMessageId": "middleware-lineage",
-                "parentTurnId": "initiating-turn",
-                "rootTurnId": "causal-root",
-                "input": [{"type":"text", "text":"Original prompt", "text_elements":[]}]
-            })),
-        )
-        .await?;
+    let original_request = app_server.send_request("turn/start", Some(json!({
+        "threadId": thread.id,
+        "clientUserMessageId": "middleware-lineage",
+        "parentTurnId": "initiating-turn",
+        "rootTurnId": "causal-root",
+        "input": [{"type":"text", "text":"Original prompt", "text_elements":[]}]
+    }))).await?;
     let request = app_server.read_stream_until_request_message().await?;
     let ServerRequest::InputMiddlewareRequest { request_id, params } = request else {
         panic!("expected input middleware request: {request:?}");
@@ -274,10 +272,7 @@ async fn strict_timeout_rejects_without_dispatch_and_records_resolution() -> Res
 }
 
 #[derive(Clone, Copy, Debug)]
-enum MalformedReplacement {
-    Empty,
-    OverLimit,
-}
+enum MalformedReplacement { Empty, OverLimit }
 
 #[test_matrix([MalformedReplacement::Empty, MalformedReplacement::OverLimit], [InputMiddlewareUnavailablePolicy::Pass, InputMiddlewareUnavailablePolicy::Reject])]
 #[tokio::test]
@@ -286,30 +281,15 @@ async fn malformed_replacement_follows_unavailable_policy_and_is_journaled(
     policy: InputMiddlewareUnavailablePolicy,
 ) -> Result<()> {
     let server = responses::start_mock_server().await;
-    let mock = responses::mount_sse_once(
-        &server,
-        create_final_assistant_message_sse_response("Done")?,
-    )
-    .await;
+    let mock = responses::mount_sse_once(&server, create_final_assistant_message_sse_response("Done")?).await;
     let home = TempDir::new()?;
     MockResponsesConfig::new(&server.uri()).write(home.path())?;
-    let mut app_server = TestAppServer::builder()
-        .with_codex_home(home.path())
-        .build_initialized()
-        .await?;
-    let ThreadStartResponse { thread, .. } = app_server
-        .start_thread(ThreadStartParams::default())
-        .await?;
-    let _: InputMiddlewareAttachResponse = app_server
-        .request(|request_id| ClientRequest::InputMiddlewareAttach {
-            request_id,
-            params: InputMiddlewareAttachParams {
-                thread_id: thread.id.clone(),
-                timeout_ms: 500,
-                on_unavailable: policy,
-            },
-        })
-        .await?;
+    let mut app_server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let ThreadStartResponse { thread, .. } = app_server.start_thread(ThreadStartParams::default()).await?;
+    let _: InputMiddlewareAttachResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareAttach {
+        request_id,
+        params: InputMiddlewareAttachParams { thread_id: thread.id.clone(), timeout_ms: 500, on_unavailable: policy },
+    }).await?;
     let submitted = submit(&mut app_server, &thread.id).await?;
     let request = app_server.read_stream_until_request_message().await?;
     let ServerRequest::InputMiddlewareRequest { request_id, params } = request else {
@@ -319,60 +299,139 @@ async fn malformed_replacement_follows_unavailable_policy_and_is_journaled(
         MalformedReplacement::Empty => String::new(),
         MalformedReplacement::OverLimit => "é".repeat(32769),
     };
-    app_server
-        .send_response(request_id, json!({"type":"replace", "text":text}))
-        .await?;
+    app_server.send_response(request_id, json!({"type":"replace", "text":text})).await?;
     let (disposition, selected_text) = match policy {
         InputMiddlewareUnavailablePolicy::Pass => {
             let _: TurnStartResponse = app_server.read_response(submitted).await?;
-            app_server
-                .read_stream_until_notification_message("turn/completed")
-                .await?;
-            assert!(
-                mock.single_request()
-                    .message_input_texts("user")
-                    .iter()
-                    .any(|text| text.contains("Original prompt"))
-            );
-            (
-                InputMiddlewareDisposition::Passed,
-                Some("Original prompt".into()),
-            )
+            app_server.read_stream_until_notification_message("turn/completed").await?;
+            assert!(mock.single_request().message_input_texts("user").iter().any(|text| text.contains("Original prompt")));
+            (InputMiddlewareDisposition::Passed, Some("Original prompt".into()))
         }
         InputMiddlewareUnavailablePolicy::Reject => {
-            let error = app_server
-                .read_stream_until_error_message(RequestId::Integer(submitted))
-                .await?;
+            let error = app_server.read_stream_until_error_message(RequestId::Integer(submitted)).await?;
             assert!(error.error.message.contains("input middleware unavailable"));
             assert!(mock.requests().is_empty());
             (InputMiddlewareDisposition::Rejected, None)
         }
     };
-    let recovered: InputMiddlewareReadResponse = app_server
-        .request(|request_id| ClientRequest::InputMiddlewareRead {
-            request_id,
-            params: InputMiddlewareReadParams {
-                thread_id: thread.id.clone(),
-                input_id: params.input_id.clone(),
-            },
-        })
-        .await?;
-    assert_eq!(
-        recovered.record,
-        Some(InputMiddlewareRecord {
-            thread_id: thread.id.clone(),
-            input_id: params.input_id,
-            original_text: "Original prompt".into(),
-            selected_text,
-            disposition,
-            effect: None,
-        })
-    );
+    let recovered: InputMiddlewareReadResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareRead {
+        request_id,
+        params: InputMiddlewareReadParams { thread_id: thread.id.clone(), input_id: params.input_id.clone() },
+    }).await?;
+    assert_eq!(recovered.record, Some(InputMiddlewareRecord {
+        thread_id: thread.id.clone(), input_id: params.input_id,
+        original_text: "Original prompt".into(), selected_text, disposition, effect: None,
+    }));
     let duplicate = submit(&mut app_server, &thread.id).await?;
-    let error = app_server
-        .read_stream_until_error_message(RequestId::Integer(duplicate))
-        .await?;
+    let error = app_server.read_stream_until_error_message(RequestId::Integer(duplicate)).await?;
     assert!(error.error.message.contains("already offered"));
+    Ok(())
+}
+
+#[tokio::test]
+async fn full_input_middleware_journal_refuses_admission_and_preserves_replay() -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_once(
+        &server,
+        create_final_assistant_message_sse_response("Unexpected dispatch")?,
+    ).await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(home.path())?;
+    let mut app_server = TestAppServer::builder()
+        .with_codex_home(home.path())
+        .build_initialized().await?;
+    let ThreadStartResponse { thread, .. } = app_server
+        .start_thread(ThreadStartParams::default()).await?;
+    let attachment = attach(&mut app_server, &thread.id).await?;
+    let submitted = submit(&mut app_server, &thread.id).await?;
+    let request = app_server.read_stream_until_request_message().await?;
+    let ServerRequest::InputMiddlewareRequest { request_id, params } = request else {
+        panic!("expected middleware request: {request:?}");
+    };
+    app_server.send_response(request_id, json!({
+        "type": "intercept", "operationId": "retained-effect"
+    })).await?;
+    let error = app_server.read_stream_until_error_message(RequestId::Integer(submitted)).await?;
+    assert!(error.error.message.contains("input intercepted"));
+    app_server.read_stream_until_notification_message("thread/input/resolved").await?;
+    let recovered: InputMiddlewareReadResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareRead {
+        request_id,
+        params: InputMiddlewareReadParams {
+            thread_id: thread.id.clone(), input_id: params.input_id.clone(),
+        },
+    }).await?;
+    let retained = recovered.record.expect("real committed record before filling journal");
+
+    // Fill storage without fabricating admission records: JSON permits trailing
+    // whitespace on the actual owner's record. This remains valid replay input
+    // at the existing byte limit, unlike a sparse NUL-filled or corrupt fixture.
+    const JOURNAL_BYTE_LIMIT: u64 = 160 * 1024 * 1024;
+    let journal = home.path().join("input-middleware").join(format!("{}.jsonl", thread.id));
+    let mut file = std::fs::OpenOptions::new().write(true).open(&journal)?;
+    let persisted_len = file.metadata()?.len();
+    assert!(persisted_len < JOURNAL_BYTE_LIMIT);
+    file.seek(SeekFrom::End(-1))?;
+    let padding = [b' '; 8192];
+    let mut remaining = JOURNAL_BYTE_LIMIT - persisted_len;
+    while remaining > 0 {
+        let count = remaining.min(padding.len() as u64) as usize;
+        file.write_all(&padding[..count])?;
+        remaining -= count as u64;
+    }
+    file.write_all(b"\n")?;
+    file.sync_all()?;
+    drop(file);
+    assert_eq!(std::fs::metadata(&journal)?.len(), JOURNAL_BYTE_LIMIT);
+
+    let refused = app_server.send_request("turn/start", Some(json!({
+        "threadId": thread.id,
+        "clientUserMessageId": "full-journal",
+        "input": [{"type":"text", "text":"Must not dispatch", "text_elements":[]}]
+    }))).await?;
+    let request = app_server.read_stream_until_request_message().await?;
+    let ServerRequest::InputMiddlewareRequest { request_id, .. } = request else {
+        panic!("expected middleware request: {request:?}");
+    };
+    app_server.send_response(request_id, json!({"type":"pass"})).await?;
+    let error = app_server.read_stream_until_error_message(RequestId::Integer(refused)).await?;
+    assert!(error.error.message.contains("input middleware unavailable"));
+    assert!(mock.requests().is_empty(), "storage refusal must precede native dispatch");
+    let recovered: InputMiddlewareReadResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareRead {
+        request_id,
+        params: InputMiddlewareReadParams {
+            thread_id: thread.id.clone(), input_id: "client:full-journal".into(),
+        },
+    }).await?;
+    assert_eq!(recovered.record, None);
+
+    // Receipt mutation shares the real append boundary and must not overwrite
+    // the retained effect state when its additional record cannot fit either.
+    let completion = app_server.send_request("thread/input/complete", Some(serde_json::to_value(InputMiddlewareCompleteParams {
+        thread_id: thread.id.clone(),
+        input_id: params.input_id.clone(),
+        operation_id: "retained-effect".into(),
+        receipt: InputMiddlewareEffectReceipt {
+            status: InputMiddlewareEffectStatus::Succeeded,
+            summary: "External operation completed".into(),
+        },
+    })?)).await?;
+    let error = app_server.read_stream_until_error_message(RequestId::Integer(completion)).await?;
+    assert!(error.error.message.contains("input middleware journal is full"));
+    assert_eq!(std::fs::metadata(&journal)?.len(), JOURNAL_BYTE_LIMIT);
+    let _: InputMiddlewareDetachResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareDetach {
+        request_id,
+        params: InputMiddlewareDetachParams {
+            thread_id: thread.id.clone(), owner_id: attachment.owner_id,
+        },
+    }).await?;
+    attach(&mut app_server, &thread.id).await?;
+    let replayed: InputMiddlewareReadResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareRead {
+        request_id,
+        params: InputMiddlewareReadParams {
+            thread_id: thread.id, input_id: params.input_id,
+        },
+    }).await?;
+    assert_eq!(replayed.record, Some(retained));
     Ok(())
 }
 
