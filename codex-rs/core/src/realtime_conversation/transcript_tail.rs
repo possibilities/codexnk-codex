@@ -18,26 +18,44 @@ use codex_rollout::RolloutItem;
 use codex_thread_store::PersistContext;
 use std::sync::Arc;
 
-#[expect(
-    clippy::await_holding_invalid_type,
-    reason = "record history before the owning task can finish or a new task can start"
-)]
-pub(super) async fn record(session: &Session, text: String, source_id: String) -> std::io::Result<()> {
+/// Admit without a working turn, then use the stock history-only recorder.
+/// Interception returns before context creation or any transcript mutation.
+pub(super) async fn admit_and_record(
+    session: &Session,
+    text: String,
+    source_id: String,
+) -> std::io::Result<()> {
     let mut request = TurnInputRequest::user_input(vec![UserInput::Text {
         text,
         text_elements: Vec::new(),
     }])
-    .with_human_input_source(HumanInputSource { id: source_id, realtime: true });
+    .with_human_input_source(HumanInputSource {
+        id: source_id,
+        realtime: true,
+    });
     match crate::input_middleware::admit(session, &mut request).await {
         Ok(()) => {}
         Err(NotSubmittedReason::InputIntercepted { .. }) => return Ok(()),
         Err(reason) => {
-            return Err(std::io::Error::other(format!("realtime transcript admission refused: {reason:?}")));
+            return Err(std::io::Error::other(format!(
+                "realtime transcript admission refused: {reason:?}"
+            )));
         }
     }
-    let TurnInput::UserInput { content, .. } = request.input else {
+    let TurnInput::UserInput { mut content, .. } = request.input else {
         unreachable!("realtime transcript admission preserves user input");
     };
+    let Some(UserInput::Text { text, .. }) = content.pop() else {
+        unreachable!("realtime transcript admission preserves single text input");
+    };
+    record(session, text).await
+}
+
+#[expect(
+    clippy::await_holding_invalid_type,
+    reason = "record history before the owning task can finish or a new task can start"
+)]
+async fn record(session: &Session, text: String) -> std::io::Result<()> {
     let mut recording_context = session.new_inject_items_context().await;
     Arc::get_mut(&mut recording_context)
         .ok_or_else(|| std::io::Error::other("realtime transcript context is shared"))?
@@ -49,6 +67,10 @@ pub(super) async fn record(session: &Session, text: String, source_id: String) -
         .map(|task| Arc::clone(&task.turn_context));
     let recording_turn = running_turn.is_none();
     let turn = running_turn.unwrap_or(recording_context);
+    let content = vec![UserInput::Text {
+        text,
+        text_elements: Vec::new(),
+    }];
     let now = chrono::Utc::now();
     if recording_turn {
         let started = EventMsg::TurnStarted(TurnStartedEvent {
