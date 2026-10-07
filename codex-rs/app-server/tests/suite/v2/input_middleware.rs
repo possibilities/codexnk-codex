@@ -28,7 +28,7 @@ use codex_app_server_protocol::TurnStartResponse;
 use core_test_support::responses;
 use serde_json::json;
 use tempfile::TempDir;
-use test_macros::test_matrix;
+use test_case::test_matrix;
 use pretty_assertions::assert_eq;
 
 async fn attach(
