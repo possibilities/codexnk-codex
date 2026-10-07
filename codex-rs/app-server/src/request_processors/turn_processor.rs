@@ -11,19 +11,11 @@ use codex_app_server_protocol::InputMiddlewareCompleteResponse;
 use codex_app_server_protocol::InputMiddlewareDetachParams;
 use codex_app_server_protocol::InputMiddlewareDetachResponse;
 use codex_app_server_protocol::InputMiddlewareDisposition;
-use codex_app_server_protocol::InputMiddlewareOrigin;
 use codex_app_server_protocol::InputMiddlewareReadParams;
 use codex_app_server_protocol::InputMiddlewareReadResponse;
 use codex_app_server_protocol::InputMiddlewareRecord;
-use codex_app_server_protocol::InputMiddlewareRequestParams;
-use codex_app_server_protocol::InputMiddlewareRequestResponse;
 use codex_app_server_protocol::InputMiddlewareResolvedNotification;
-use codex_app_server_protocol::InputMiddlewareUnavailablePolicy;
 use codex_app_server_protocol::ServerNotification;
-use codex_app_server_protocol::ServerRequestPayload;
-use codex_core::HumanInputCommit;
-use codex_core::HumanInputDecision;
-use codex_core::HumanInputOrigin;
 use codex_protocol::error::CodexErrorDetails;
 use codex_protocol::models::ContentItem;
 use codex_protocol::models::FunctionCallOutputBody;
@@ -264,111 +256,21 @@ impl TurnRequestProcessor {
             .lock()
             .await
             .insert(thread_id, journal.clone());
-        let (sender, mut receiver) =
+        let (sender, receiver) =
             tokio::sync::mpsc::channel::<codex_core::HumanInputMiddlewareRequest>(16);
         thread.set_human_input_middleware(Some(sender));
         owners.insert(thread_id, (owner, Arc::downgrade(&thread)));
         drop(owners);
-        let outgoing = Arc::clone(&self.outgoing);
-        let resolutions = Arc::clone(&self.middleware_resolutions);
-        let timeout_ms = params.timeout_ms;
-        let fail_open = params.on_unavailable == InputMiddlewareUnavailablePolicy::Pass;
-        tokio::spawn(async move {
-            while let Some(request) = receiver.recv().await {
-                let candidate = request.candidate;
-                let input_id = candidate.input_id.clone();
-                let original_text = candidate.text.clone();
-                let payload = InputMiddlewareRequestParams {
-                    thread_id: candidate.thread_id.to_string(),
-                    input_id: candidate.input_id,
-                    origin: match candidate.origin {
-                        HumanInputOrigin::Client => InputMiddlewareOrigin::Client,
-                        HumanInputOrigin::Realtime => InputMiddlewareOrigin::Realtime,
-                    },
-                    text: candidate.text,
-                };
-                let (server_request_id, answer) = outgoing
-                    .send_request_to_connections(
-                        Some(&[owner]),
-                        ServerRequestPayload::InputMiddlewareRequest(payload),
-                        Some(thread_id),
-                    )
-                    .await;
-                let decision = match tokio::time::timeout(
-                    std::time::Duration::from_millis(u64::from(timeout_ms)),
-                    answer,
-                )
-                .await
-                {
-                    Ok(Ok(Ok(value))) => {
-                        match serde_json::from_value::<InputMiddlewareRequestResponse>(value) {
-                            Ok(InputMiddlewareRequestResponse::Pass) => HumanInputDecision::Pass,
-                            Ok(InputMiddlewareRequestResponse::Replace { text })
-                                if !text.is_empty() && text.chars().count() <= codex_core::MAX_MIDDLEWARE_TEXT_CHARS => {
-                                HumanInputDecision::Replace(text)
-                            }
-                            Ok(InputMiddlewareRequestResponse::Intercept { operation_id })
-                                if !operation_id.is_empty() =>
-                            {
-                                HumanInputDecision::Intercept { operation_id }
-                            }
-                            _ if fail_open => HumanInputDecision::Pass,
-                            _ => HumanInputDecision::Reject,
-                        }
-                    }
-                    _ if fail_open => HumanInputDecision::Pass,
-                    _ => HumanInputDecision::Reject,
-                };
-                outgoing.cancel_request(&server_request_id).await;
-                let _ = request.reply.send(decision);
-                if let Ok(commit) = request.committed.await {
-                    // Persist Core's winning commit, not a prediction made before
-                    // Core has validated/accepted the selected input.
-                    let (disposition, selected_text) = match commit {
-                        HumanInputCommit::Pass => (InputMiddlewareDisposition::Passed, Some(original_text.clone())),
-                        HumanInputCommit::Replace { text } => (InputMiddlewareDisposition::Replaced, Some(text)),
-                        HumanInputCommit::Intercept { operation_id } => {
-                            (InputMiddlewareDisposition::Intercepted { operation_id }, None)
-                        }
-                        HumanInputCommit::Reject => (InputMiddlewareDisposition::Rejected, None),
-                    };
-                    let resolved = InputMiddlewareResolvedNotification {
-                        thread_id: thread_id.to_string(),
-                        input_id: input_id.clone(),
-                        disposition,
-                        effect: None,
-                    };
-                    let record = InputMiddlewareRecord {
-                        thread_id: resolved.thread_id.clone(),
-                        input_id: resolved.input_id.clone(),
-                        original_text,
-                        selected_text,
-                        disposition: resolved.disposition.clone(),
-                        effect: None,
-                    };
-                    let mut resolutions_guard = resolutions.lock().await;
-                    if let Err(error) =
-                        crate::input_middleware_journal::append(journal.clone(), &record).await
-                    {
-                        tracing::error!(?error, "failed to persist input middleware resolution");
-                        let _ = request.stored.send(false);
-                        continue;
-                    }
-                    resolutions_guard
-                        .entry(thread_id)
-                        .or_default()
-                        .insert(input_id, record);
-                    drop(resolutions_guard);
-                    let _ = request.stored.send(true);
-                    outgoing
-                        .send_server_notification_to_connections(
-                            &[owner],
-                            ServerNotification::InputMiddlewareResolved(resolved),
-                        )
-                        .await;
-                }
-            }
-        });
+        let worker = crate::input_middleware::AdmissionWorker {
+            owner,
+            thread_id,
+            outgoing: Arc::clone(&self.outgoing),
+            resolutions: Arc::clone(&self.middleware_resolutions),
+            journal,
+            timeout: std::time::Duration::from_millis(u64::from(params.timeout_ms)),
+            on_unavailable: params.on_unavailable,
+        };
+        tokio::spawn(worker.run(receiver));
         Ok(Some(
             InputMiddlewareAttachResponse {
                 thread_id: thread_id.to_string(),

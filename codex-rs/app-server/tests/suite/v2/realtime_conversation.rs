@@ -1810,7 +1810,7 @@ async fn realtime_conversation_stop_emits_closed_notification(
     history_mode: ThreadHistoryMode,
     running: bool,
 ) -> Result<()> {
-    check_terminal_transcript(history_mode, running, None).await
+    check_terminal_transcript(history_mode, running, None, None).await
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1822,13 +1822,22 @@ async fn realtime_input_middleware_admits_terminal_tail_without_inference(
     disposition: TailDisposition,
     running: bool,
 ) -> Result<()> {
-    check_terminal_transcript(ThreadHistoryMode::Paginated, running, Some(disposition)).await
+    check_terminal_transcript(ThreadHistoryMode::Paginated, running, Some(disposition), None).await
+}
+
+#[test_matrix([InputMiddlewareUnavailablePolicy::Pass, InputMiddlewareUnavailablePolicy::Reject])]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn realtime_input_middleware_concurrent_typed_and_tail_timeouts_honor_policy(
+    policy: InputMiddlewareUnavailablePolicy,
+) -> Result<()> {
+    check_terminal_transcript(ThreadHistoryMode::Paginated, /*running*/ false, None, Some(policy)).await
 }
 
 async fn check_terminal_transcript(
     history_mode: ThreadHistoryMode,
     running: bool,
     disposition: Option<TailDisposition>,
+    concurrent_policy: Option<InputMiddlewareUnavailablePolicy>,
 ) -> Result<()> {
     skip_if_no_network!(Ok(()));
 
@@ -1896,13 +1905,13 @@ async fn check_terminal_transcript(
         None
     };
 
-    if disposition.is_some() {
+    if disposition.is_some() || concurrent_policy.is_some() {
         let _: InputMiddlewareAttachResponse = mcp.request(|request_id| ClientRequest::InputMiddlewareAttach {
             request_id,
             params: InputMiddlewareAttachParams {
                 thread_id: thread_start.thread.id.clone(),
                 timeout_ms: 2000,
-                on_unavailable: InputMiddlewareUnavailablePolicy::Reject,
+                on_unavailable: concurrent_policy.unwrap_or(InputMiddlewareUnavailablePolicy::Reject),
             },
         }).await?;
     }
@@ -1944,6 +1953,26 @@ async fn check_terminal_transcript(
     .await?;
     assert_eq!(transcript.delta, "final words");
 
+    // A typed steer with no active turn still needs admission. Its eventual
+    // native refusal is distinct from a middleware rejection and cannot infer.
+    // Leave its owner request unanswered while a realtime tail is admitted.
+    let typed_request = if concurrent_policy.is_some() {
+        let request = mcp.send_request("turn/steer", Some(json!({
+            "threadId": thread_start.thread.id,
+            "expectedTurnId": "no-active-turn",
+            "clientUserMessageId": "concurrent-typed",
+            "input": [{"type":"text", "text":"Concurrent typed text", "text_elements":[]}]
+        }))).await?;
+        let directed = mcp.read_stream_until_request_message().await?;
+        let ServerRequest::InputMiddlewareRequest { params, .. } = directed else {
+            anyhow::bail!("expected typed admission request: {directed:?}");
+        };
+        assert_eq!(params.input_id, "client:concurrent-typed");
+        Some(request)
+    } else {
+        None
+    };
+
     let stop_request_id = mcp
         .send_thread_realtime_stop_request(ThreadRealtimeStopParams {
             thread_id: started.thread_id.clone(),
@@ -1952,7 +1981,8 @@ async fn check_terminal_transcript(
     let mut stop_received = false;
     let mut closed = None;
     let mut tail_input_id = None;
-    while !stop_received || closed.is_none() {
+    let mut typed_finished = typed_request.is_none();
+    while !stop_received || closed.is_none() || !typed_finished {
         match timeout(DEFAULT_TIMEOUT, mcp.read_next_message()).await?? {
             JSONRPCMessage::Response(response) if response.id == RequestId::Integer(stop_request_id) => {
                 let _: ThreadRealtimeStopResponse = serde_json::from_value(response.result)?;
@@ -1965,6 +1995,11 @@ async fn check_terminal_transcript(
                 let input_id = params["inputId"].as_str().context("tail identity")?.to_owned();
                 assert!(input_id.starts_with("realtime:") && input_id.ends_with(":tail"));
                 tail_input_id = Some(input_id);
+                if concurrent_policy.is_some() {
+                    // Do not answer either request: both timeouts must use the
+                    // registered policy rather than a racing Core-wide deadline.
+                    continue;
+                }
                 let reply = match disposition.context("unexpected middleware request")? {
                     TailDisposition::Pass => json!({"type":"pass"}),
                     TailDisposition::Replace => json!({"type":"replace", "text":"Selected terminal words"}),
@@ -1978,6 +2013,20 @@ async fn check_terminal_transcript(
             }
             JSONRPCMessage::Notification(notification) => {
                 assert!(!matches!(notification.method.as_str(), "turn/started" | "turn/completed"), "tail must not advertise a working turn");
+                if concurrent_policy.is_some() && notification.method == "thread/input/resolved" {
+                    assert!(tail_input_id.is_some(), "a typed decision must not block the tail's directed request");
+                }
+            }
+            JSONRPCMessage::Error(error) if Some(error.id.clone()) == typed_request.map(RequestId::Integer) => {
+                typed_finished = true;
+                match concurrent_policy.context("typed timeout policy")? {
+                    InputMiddlewareUnavailablePolicy::Pass => {
+                        assert!(error.error.message.contains("no active turn"), "typed admission must reach native steer: {}", error.error.message);
+                    }
+                    InputMiddlewareUnavailablePolicy::Reject => {
+                        assert!(error.error.message.contains("input middleware unavailable"));
+                    }
+                }
             }
             JSONRPCMessage::Error(error) => anyhow::bail!("unexpected RPC error: {error:?}"),
             _ => {}
@@ -1985,17 +2034,19 @@ async fn check_terminal_transcript(
     }
     let closed = closed.context("realtime closure")?;
     assert_eq!(closed.thread_id, started.thread_id);
-    if matches!(disposition, Some(TailDisposition::Reject)) {
+    if matches!(disposition, Some(TailDisposition::Reject)) || concurrent_policy == Some(InputMiddlewareUnavailablePolicy::Reject) {
         assert_eq!(closed.reason.as_deref(), Some("error"));
     } else {
         assert!(matches!(closed.reason.as_deref(), Some("requested" | "transport_closed")));
     }
-    let selected_text = match disposition {
-        None | Some(TailDisposition::Pass) => Some("user: final words"),
-        Some(TailDisposition::Replace) => Some("Selected terminal words"),
-        Some(TailDisposition::Intercept | TailDisposition::Reject) => None,
+    let selected_text = match (disposition, concurrent_policy) {
+        (_, Some(InputMiddlewareUnavailablePolicy::Pass)) => Some("user: final words"),
+        (_, Some(InputMiddlewareUnavailablePolicy::Reject)) => None,
+        (None | Some(TailDisposition::Pass), None) => Some("user: final words"),
+        (Some(TailDisposition::Replace), None) => Some("Selected terminal words"),
+        (Some(TailDisposition::Intercept | TailDisposition::Reject), None) => None,
     };
-    if let Some(disposition) = disposition {
+    if disposition.is_some() || concurrent_policy.is_some() {
         let recovered: InputMiddlewareReadResponse = mcp.request(|request_id| ClientRequest::InputMiddlewareRead {
             request_id,
             params: InputMiddlewareReadParams {
@@ -2004,15 +2055,42 @@ async fn check_terminal_transcript(
             },
         }).await?;
         let record = recovered.record.context("synced tail resolution at closure")?;
-        let expected = match disposition {
-            TailDisposition::Pass => InputMiddlewareDisposition::Passed,
-            TailDisposition::Replace => InputMiddlewareDisposition::Replaced,
-            TailDisposition::Intercept => InputMiddlewareDisposition::Intercepted { operation_id: "tail-effect".into() },
-            TailDisposition::Reject => InputMiddlewareDisposition::Rejected,
+        let expected = match (disposition, concurrent_policy) {
+            (_, Some(InputMiddlewareUnavailablePolicy::Pass)) => InputMiddlewareDisposition::Passed,
+            (_, Some(InputMiddlewareUnavailablePolicy::Reject)) => InputMiddlewareDisposition::Rejected,
+            (Some(TailDisposition::Pass), None) => InputMiddlewareDisposition::Passed,
+            (Some(TailDisposition::Replace), None) => InputMiddlewareDisposition::Replaced,
+            (Some(TailDisposition::Intercept), None) => InputMiddlewareDisposition::Intercepted { operation_id: "tail-effect".into() },
+            (Some(TailDisposition::Reject), None) => InputMiddlewareDisposition::Rejected,
+            (None, None) => unreachable!("unregistered tail has no resolution"),
         };
         assert_eq!(record.disposition, expected);
-        assert_eq!(record.selected_text.is_some(), selected_text.is_some());
+        let expected_selected = match expected {
+            InputMiddlewareDisposition::Passed => Some(record.original_text.clone()),
+            InputMiddlewareDisposition::Replaced => Some("Selected terminal words".into()),
+            InputMiddlewareDisposition::Intercepted { .. } | InputMiddlewareDisposition::Rejected => None,
+        };
+        assert_eq!(record.selected_text, expected_selected);
         assert!(record.original_text.contains("user: final words"));
+    }
+    if let Some(policy) = concurrent_policy {
+        let recovered: InputMiddlewareReadResponse = mcp.request(|request_id| ClientRequest::InputMiddlewareRead {
+            request_id,
+            params: InputMiddlewareReadParams {
+                thread_id: thread_start.thread.id.clone(), input_id: "client:concurrent-typed".into(),
+            },
+        }).await?;
+        let record = recovered.record.context("typed timeout resolution")?;
+        match policy {
+            InputMiddlewareUnavailablePolicy::Pass => {
+                assert_eq!(record.disposition, InputMiddlewareDisposition::Passed);
+                assert_eq!(record.selected_text.as_deref(), Some("Concurrent typed text"));
+            }
+            InputMiddlewareUnavailablePolicy::Reject => {
+                assert_eq!(record.disposition, InputMiddlewareDisposition::Rejected);
+                assert_eq!(record.selected_text, None);
+            }
+        }
     }
 
     // The parent's handback uses this API immediately after Closed, even when
@@ -2075,15 +2153,15 @@ async fn check_terminal_transcript(
     };
     assert_eq!(turns.len(), usize::from(running || selected_text.is_some()));
     if !turns.is_empty() {
-    assert_eq!(
-        turns[0].status,
-        if running {
-            TurnStatus::InProgress
-        } else {
-            TurnStatus::Completed
-        }
-    );
-    assert_eq!(Uuid::parse_str(&turns[0].id)?.get_version_num(), 7);
+        assert_eq!(
+            turns[0].status,
+            if running {
+                TurnStatus::InProgress
+            } else {
+                TurnStatus::Completed
+            }
+        );
+        assert_eq!(Uuid::parse_str(&turns[0].id)?.get_version_num(), 7);
     }
 
     response_tx.send(())?;

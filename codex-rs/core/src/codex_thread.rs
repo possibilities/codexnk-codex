@@ -237,7 +237,8 @@ pub struct BackgroundTerminalInfo {
 /// (formerly called a conversation) in Codex.
 impl CodexThread {
     /// Installs or removes the app-server's single human-input owner for this loaded thread.
-    /// A disconnected receiver cannot keep Core waiting indefinitely.
+    /// The receiver must bound each decision and apply its unavailable policy.
+    /// Dropping it also drops pending replies, causing Core to refuse admission.
     pub fn set_human_input_middleware(
         &self,
         sender: Option<tokio::sync::mpsc::Sender<crate::HumanInputMiddlewareRequest>>,

@@ -113,10 +113,10 @@ pub(crate) async fn admit(
         .await
         .is_ok()
     {
-        tokio::time::timeout(std::time::Duration::from_secs(3), response)
-            .await
-            .ok()
-            .and_then(Result::ok)
+        // The app-server bounds each directed decision and owns its registered
+        // fallback. A second, submission-wide deadline would race that policy
+        // while candidates wait for bounded worker/journal capacity.
+        response.await.ok()
     } else {
         None
     };
