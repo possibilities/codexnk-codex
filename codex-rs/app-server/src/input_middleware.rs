@@ -126,7 +126,9 @@ impl AdmissionWorker {
                 InputMiddlewareDisposition::Passed,
                 Some(original_text.clone()),
             ),
-            HumanInputCommit::Replace { text } => (InputMiddlewareDisposition::Replaced, Some(text)),
+            HumanInputCommit::Replace { text } => {
+                (InputMiddlewareDisposition::Replaced, Some(text))
+            }
             HumanInputCommit::Intercept { operation_id } => (
                 InputMiddlewareDisposition::Intercepted { operation_id },
                 None,
@@ -148,7 +150,8 @@ impl AdmissionWorker {
             effect: None,
         };
         let mut resolutions = self.resolutions.lock().await;
-        if let Err(error) = crate::input_middleware_journal::append(self.journal.clone(), &record).await
+        if let Err(error) =
+            crate::input_middleware_journal::append(self.journal.clone(), &record).await
         {
             tracing::error!(?error, "failed to persist input middleware resolution");
             let _ = request.stored.send(false);

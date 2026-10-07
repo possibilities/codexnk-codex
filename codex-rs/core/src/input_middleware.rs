@@ -63,7 +63,7 @@ pub(crate) async fn admit(
     let owner = session
         .human_input_middleware
         .read()
-        .expect("human-input middleware lock poisoned")
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
     let (Some(owner), Some(source)) = (owner, request.human_input_source.as_ref()) else {
         return Ok(());
@@ -73,13 +73,23 @@ pub(crate) async fn admit(
     }
     let input_id = format!(
         "{}:{}",
-        if source.realtime { "realtime" } else { "client" },
+        if source.realtime {
+            "realtime"
+        } else {
+            "client"
+        },
         source.id
     );
     let TurnInput::UserInput { content, .. } = &mut request.input else {
         return Err(NotSubmittedReason::InputMiddlewareUnavailable);
     };
-    let [UserInput::Text { text, text_elements }] = content.as_mut_slice() else {
+    let [
+        UserInput::Text {
+            text,
+            text_elements,
+        },
+    ] = content.as_mut_slice()
+    else {
         return Err(NotSubmittedReason::InputMiddlewareUnavailable);
     };
     if !text_elements.is_empty() || text.chars().count() > MAX_MIDDLEWARE_TEXT_CHARS {

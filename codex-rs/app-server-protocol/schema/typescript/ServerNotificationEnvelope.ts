@@ -25,6 +25,7 @@ import type { GatewayOAuthChangedNotification } from "./v2/GatewayOAuthChangedNo
 import type { GuardianWarningNotification } from "./v2/GuardianWarningNotification";
 import type { HookCompletedNotification } from "./v2/HookCompletedNotification";
 import type { HookStartedNotification } from "./v2/HookStartedNotification";
+import type { InputMiddlewareResolvedNotification } from "./v2/InputMiddlewareResolvedNotification";
 import type { ItemCompletedNotification } from "./v2/ItemCompletedNotification";
 import type { ItemGuardianApprovalReviewCompletedNotification } from "./v2/ItemGuardianApprovalReviewCompletedNotification";
 import type { ItemGuardianApprovalReviewStartedNotification } from "./v2/ItemGuardianApprovalReviewStartedNotification";
@@ -93,7 +94,7 @@ import type { WindowsWorldWritableWarningNotification } from "./v2/WindowsWorldW
  * `emitted_at_ms` records when app-server emitted the notification, before it
  * is fanned out to individual connections.
  */
-export type ServerNotificationEnvelope = {
+export type ServerNotificationEnvelope = { "method": "thread/input/resolved", "params": InputMiddlewareResolvedNotification } | {
 /**
  * Unix timestamp (in milliseconds) when app-server emitted this notification.
  *
