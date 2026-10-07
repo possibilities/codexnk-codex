@@ -591,6 +591,7 @@ pub struct WebSocketTestServer {
     connections: Arc<Mutex<Vec<Vec<WebSocketRequest>>>>,
     handshakes: Arc<Mutex<Vec<WebSocketHandshake>>>,
     request_log_updated: Arc<Notify>,
+    peer_close_requested: Arc<Notify>,
     closed_connections: watch::Receiver<usize>,
     shutdown: oneshot::Sender<()>,
     task: tokio::task::JoinHandle<()>,
@@ -653,6 +654,12 @@ impl WebSocketTestServer {
         )
         .await
         .is_ok_and(|result| result.is_ok())
+    }
+
+    /// Sends a normal peer close on the active socket, independently of client requests.
+    /// Call after observing that connection's handshake or a scripted event.
+    pub fn close_current_connection(&self) {
+        self.peer_close_requested.notify_one();
     }
 
     pub fn handshakes(&self) -> Vec<WebSocketHandshake> {
@@ -1242,10 +1249,12 @@ pub async fn start_websocket_server_with_headers(
     let connections_log = Arc::new(Mutex::new(Vec::new()));
     let handshakes_log = Arc::new(Mutex::new(Vec::new()));
     let request_log_updated = Arc::new(Notify::new());
+    let peer_close_requested = Arc::new(Notify::new());
     let (closed_tx, closed_connections) = watch::channel(0);
     let requests = Arc::clone(&connections_log);
     let handshakes = Arc::clone(&handshakes_log);
     let request_log = Arc::clone(&request_log_updated);
+    let peer_close = Arc::clone(&peer_close_requested);
     let connections = Arc::new(Mutex::new(VecDeque::from(connections)));
     let (shutdown_tx, mut shutdown_rx) = oneshot::channel();
 
@@ -1323,9 +1332,14 @@ pub async fn start_websocket_server_with_headers(
                 log.len() - 1
             };
             let close_after_requests = connection.close_after_requests;
+            let mut close_requested = false;
             for request_events in connection.requests {
                 let message = tokio::select! {
                     _ = &mut shutdown_rx => return,
+                    _ = peer_close.notified() => {
+                        close_requested = true;
+                        break;
+                    }
                     message = ws_stream.next() => message,
                 };
                 let Some(Ok(message)) = message else {
@@ -1390,13 +1404,14 @@ pub async fn start_websocket_server_with_headers(
                 }
             }
 
-            if close_after_requests {
-                let _ = ws_stream.close(None).await;
-                closed_tx.send_modify(|count| *count += 1);
-            } else {
-                let _ = shutdown_rx.await;
-                return;
+            if !close_after_requests && !close_requested {
+                tokio::select! {
+                    _ = &mut shutdown_rx => return,
+                    _ = peer_close.notified() => {}
+                }
             }
+            let _ = ws_stream.close(None).await;
+            closed_tx.send_modify(|count| *count += 1);
 
             if connections.lock().unwrap().is_empty() {
                 return;
@@ -1409,6 +1424,7 @@ pub async fn start_websocket_server_with_headers(
         connections: connections_log,
         handshakes: handshakes_log,
         request_log_updated,
+        peer_close_requested,
         closed_connections,
         shutdown: shutdown_tx,
         task,
