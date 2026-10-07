@@ -183,6 +183,11 @@ impl McpRequestProcessor {
             String,
             futures::future::BoxFuture<'static, anyhow::Result<()>>,
         ) = if enterprise {
+            if mcp_config.config_layer_stack.excludes_home_capabilities() {
+                return Err(invalid_request(
+                    "enterprise MCP authentication is unavailable with invocation axes because it requires OS keyring storage",
+                ));
+            }
             let thread_id = thread_id.clone().ok_or_else(|| {
                 invalid_request("enterprise MCP login requires a connected thread")
             })?;

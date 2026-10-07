@@ -252,7 +252,7 @@ mod role_overrides {
             ConfigLayerEntry::new(ConfigLayerSource::SessionFlags, role_layer_toml.clone());
         let insertion_index = layers.partition_point(|layer| layer.name <= role_layer.name);
         layers.insert(insertion_index, role_layer);
-        Ok(ConfigLayerStack::new(
+        let mut stack = ConfigLayerStack::new(
             layers,
             config.config_layer_stack.requirements().clone(),
             config.config_layer_stack.requirements_toml().clone(),
@@ -262,7 +262,11 @@ mod role_overrides {
             config
                 .config_layer_stack
                 .ignore_user_and_project_exec_policy_rules(),
-        ))
+        );
+        if config.config_layer_stack.excludes_home_capabilities() {
+            stack = stack.without_home_capabilities();
+        }
+        Ok(stack)
     }
 }
 

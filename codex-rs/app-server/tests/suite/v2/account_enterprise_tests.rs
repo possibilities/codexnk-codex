@@ -47,6 +47,9 @@ use wiremock::matchers::header;
 
 const WORKSPACE_ID_REFRESHED: &str = "123e4567-e89b-42d3-a456-426614174012";
 
+#[path = "invocation_axes_auth_tests.rs"]
+mod invocation_axes;
+
 #[test_case(false; "current_policy")]
 #[test_case(true; "policy_load_failure")]
 #[tokio::test]

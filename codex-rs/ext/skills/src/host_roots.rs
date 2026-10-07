@@ -53,6 +53,7 @@ async fn resolve_skill_roots_with_home_dir(
     plugin_skill_roots: Vec<PluginSkillRoot>,
     extra_skill_roots: Vec<AbsolutePathBuf>,
 ) -> Vec<HostSkillRoot> {
+    let home_dir = home_dir.filter(|_| !config_layer_stack.excludes_home_capabilities());
     let mut roots =
         roots_from_layer_stack(config_layer_stack, home_dir, repository_file_system.clone());
     roots.extend(
