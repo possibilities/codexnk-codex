@@ -15,6 +15,7 @@ use codex_app_server_protocol::InputMiddlewareEffectStatus;
 use codex_app_server_protocol::InputMiddlewareOrigin;
 use codex_app_server_protocol::InputMiddlewareReadParams;
 use codex_app_server_protocol::InputMiddlewareReadResponse;
+use codex_app_server_protocol::InputMiddlewareRecord;
 use codex_app_server_protocol::InputMiddlewareUnavailablePolicy;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::RequestId;
@@ -27,6 +28,8 @@ use codex_app_server_protocol::TurnStartResponse;
 use core_test_support::responses;
 use serde_json::json;
 use tempfile::TempDir;
+use test_macros::test_matrix;
+use pretty_assertions::assert_eq;
 
 async fn attach(
     app_server: &mut TestAppServer,
@@ -262,6 +265,63 @@ async fn strict_timeout_rejects_without_dispatch_and_records_resolution() -> Res
         recovered.record.expect("timeout resolution").disposition,
         InputMiddlewareDisposition::Rejected
     );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+enum MalformedReplacement { Empty, OverLimit }
+
+#[test_matrix([MalformedReplacement::Empty, MalformedReplacement::OverLimit], [InputMiddlewareUnavailablePolicy::Pass, InputMiddlewareUnavailablePolicy::Reject])]
+#[tokio::test]
+async fn malformed_replacement_follows_unavailable_policy_and_is_journaled(
+    replacement: MalformedReplacement,
+    policy: InputMiddlewareUnavailablePolicy,
+) -> Result<()> {
+    let server = responses::start_mock_server().await;
+    let mock = responses::mount_sse_once(&server, create_final_assistant_message_sse_response("Done")?).await;
+    let home = TempDir::new()?;
+    MockResponsesConfig::new(&server.uri()).write(home.path())?;
+    let mut app_server = TestAppServer::builder().with_codex_home(home.path()).build_initialized().await?;
+    let ThreadStartResponse { thread, .. } = app_server.start_thread(ThreadStartParams::default()).await?;
+    let _: InputMiddlewareAttachResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareAttach {
+        request_id,
+        params: InputMiddlewareAttachParams { thread_id: thread.id.clone(), timeout_ms: 500, on_unavailable: policy },
+    }).await?;
+    let submitted = submit(&mut app_server, &thread.id).await?;
+    let request = app_server.read_stream_until_request_message().await?;
+    let ServerRequest::InputMiddlewareRequest { request_id, params } = request else {
+        panic!("expected middleware request: {request:?}");
+    };
+    let text = match replacement {
+        MalformedReplacement::Empty => String::new(),
+        MalformedReplacement::OverLimit => "é".repeat(32769),
+    };
+    app_server.send_response(request_id, json!({"type":"replace", "text":text})).await?;
+    let (disposition, selected_text) = match policy {
+        InputMiddlewareUnavailablePolicy::Pass => {
+            let _: TurnStartResponse = app_server.read_response(submitted).await?;
+            app_server.read_stream_until_notification_message("turn/completed").await?;
+            assert!(mock.single_request().message_input_texts("user").iter().any(|text| text.contains("Original prompt")));
+            (InputMiddlewareDisposition::Passed, Some("Original prompt".into()))
+        }
+        InputMiddlewareUnavailablePolicy::Reject => {
+            let error = app_server.read_stream_until_error_message(RequestId::Integer(submitted)).await?;
+            assert!(error.error.message.contains("input middleware unavailable"));
+            assert!(mock.requests().is_empty());
+            (InputMiddlewareDisposition::Rejected, None)
+        }
+    };
+    let recovered: InputMiddlewareReadResponse = app_server.request(|request_id| ClientRequest::InputMiddlewareRead {
+        request_id,
+        params: InputMiddlewareReadParams { thread_id: thread.id.clone(), input_id: params.input_id.clone() },
+    }).await?;
+    assert_eq!(recovered.record, Some(InputMiddlewareRecord {
+        thread_id: thread.id.clone(), input_id: params.input_id,
+        original_text: "Original prompt".into(), selected_text, disposition, effect: None,
+    }));
+    let duplicate = submit(&mut app_server, &thread.id).await?;
+    let error = app_server.read_stream_until_error_message(RequestId::Integer(duplicate)).await?;
+    assert!(error.error.message.contains("already offered"));
     Ok(())
 }
 

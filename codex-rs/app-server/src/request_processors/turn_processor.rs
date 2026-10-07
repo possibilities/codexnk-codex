@@ -303,7 +303,8 @@ impl TurnRequestProcessor {
                     Ok(Ok(Ok(value))) => {
                         match serde_json::from_value::<InputMiddlewareRequestResponse>(value) {
                             Ok(InputMiddlewareRequestResponse::Pass) => HumanInputDecision::Pass,
-                            Ok(InputMiddlewareRequestResponse::Replace { text }) => {
+                            Ok(InputMiddlewareRequestResponse::Replace { text })
+                                if !text.is_empty() && text.chars().count() <= codex_core::MAX_MIDDLEWARE_TEXT_CHARS => {
                                 HumanInputDecision::Replace(text)
                             }
                             Ok(InputMiddlewareRequestResponse::Intercept { operation_id })
@@ -319,20 +320,17 @@ impl TurnRequestProcessor {
                     _ => HumanInputDecision::Reject,
                 };
                 outgoing.cancel_request(&server_request_id).await;
-                let selected_text = match &decision {
-                    HumanInputDecision::Pass => Some(original_text.clone()),
-                    HumanInputDecision::Replace(text) => Some(text.clone()),
-                    HumanInputDecision::Intercept { .. } | HumanInputDecision::Reject => None,
-                };
                 let _ = request.reply.send(decision);
                 if let Ok(commit) = request.committed.await {
-                    let disposition = match commit {
-                        HumanInputCommit::Pass => InputMiddlewareDisposition::Passed,
-                        HumanInputCommit::Replace => InputMiddlewareDisposition::Replaced,
+                    // Persist Core's winning commit, not a prediction made before
+                    // Core has validated/accepted the selected input.
+                    let (disposition, selected_text) = match commit {
+                        HumanInputCommit::Pass => (InputMiddlewareDisposition::Passed, Some(original_text.clone())),
+                        HumanInputCommit::Replace { text } => (InputMiddlewareDisposition::Replaced, Some(text)),
                         HumanInputCommit::Intercept { operation_id } => {
-                            InputMiddlewareDisposition::Intercepted { operation_id }
+                            (InputMiddlewareDisposition::Intercepted { operation_id }, None)
                         }
-                        HumanInputCommit::Reject => InputMiddlewareDisposition::Rejected,
+                        HumanInputCommit::Reject => (InputMiddlewareDisposition::Rejected, None),
                     };
                     let resolved = InputMiddlewareResolvedNotification {
                         thread_id: thread_id.to_string(),

@@ -105,6 +105,7 @@ pub use input_middleware::HumanInputCommit;
 pub use input_middleware::HumanInputDecision;
 pub use input_middleware::HumanInputMiddlewareRequest;
 pub use input_middleware::HumanInputOrigin;
+pub use input_middleware::MAX_MIDDLEWARE_TEXT_CHARS;
 mod installation_id;
 pub(crate) mod mcp;
 mod mcp_skill_dependencies;

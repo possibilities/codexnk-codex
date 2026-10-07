@@ -96,13 +96,17 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
     thread.set_human_input_middleware(Some(sender));
     let middleware = tokio::spawn(async move {
         while let Some(request) = receiver.recv().await {
-            let decision = if request.candidate.text == "intercept" {
-                codex_core::HumanInputDecision::Intercept { operation_id: "external".into() }
-            } else {
-                codex_core::HumanInputDecision::Replace(format!("admitted {}", request.candidate.text))
+            let malformed = request.candidate.text == "malformed";
+            let decision = match request.candidate.text.as_str() {
+                "intercept" => codex_core::HumanInputDecision::Intercept { operation_id: "external".into() },
+                "malformed" => codex_core::HumanInputDecision::Replace(String::new()),
+                _ => codex_core::HumanInputDecision::Replace(format!("admitted {}", request.candidate.text)),
             };
             request.reply.send(decision).expect("admission receiver");
-            request.committed.await.expect("Core commitment");
+            let commit = request.committed.await.expect("Core commitment");
+            if malformed {
+                assert!(matches!(commit, codex_core::HumanInputCommit::Reject), "defensive refusal must commit a rejection for the owner to journal");
+            }
             request.stored.send(true).expect("storage acknowledgment receiver");
         }
     });
@@ -146,6 +150,12 @@ async fn turn_extension_data_is_captured_for_automatic_turns() -> anyhow::Result
     assert_eq!(
         thread.config_snapshot().await.turn_extension_init.get::<String>(),
         Some(Arc::new("submitted".to_owned())),
+    );
+    assert_eq!(
+        thread.start_or_steer_turn(user_message_request("malformed").with_human_input_source(HumanInputSource {
+            id: "malformed".into(), realtime: false,
+        })).await?,
+        TurnInputSubmission::NotSubmitted { reason: NotSubmittedReason::InputMiddlewareUnavailable },
     );
     let mut next = ExtensionDataInit::new();
     next.insert("next".to_owned());

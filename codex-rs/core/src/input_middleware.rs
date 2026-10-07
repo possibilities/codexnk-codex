@@ -12,7 +12,8 @@ use codex_protocol::user_input::UserInput;
 use tokio::sync::oneshot;
 
 pub(crate) const MAX_MIDDLEWARE_INPUTS: usize = 4096;
-const MAX_MIDDLEWARE_TEXT_CHARS: usize = 32768;
+/// Shared by the Core gate and app-server reply validation (Unicode scalar values).
+pub const MAX_MIDDLEWARE_TEXT_CHARS: usize = 32768;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HumanInputOrigin {
@@ -48,7 +49,7 @@ pub struct HumanInputMiddlewareRequest {
 #[derive(Debug)]
 pub enum HumanInputCommit {
     Pass,
-    Replace,
+    Replace { text: String },
     Intercept { operation_id: String },
     Reject,
 }
@@ -128,9 +129,13 @@ pub(crate) async fn admit(
         }
         HumanInputDecision::Replace(replacement) => {
             if replacement.is_empty() || replacement.chars().count() > MAX_MIDDLEWARE_TEXT_CHARS {
+                // The app-server validates replies, but other Core owners may
+                // still send malformed decisions. Never abandon a reserved ID.
+                let _ = commit_sender.send(HumanInputCommit::Reject);
+                let _ = storage_ack.await;
                 return Err(NotSubmittedReason::InputMiddlewareUnavailable);
             }
-            let _ = commit_sender.send(HumanInputCommit::Replace);
+            let _ = commit_sender.send(HumanInputCommit::Replace { text: replacement.clone() });
             if !matches!(storage_ack.await, Ok(true)) {
                 return Err(NotSubmittedReason::InputMiddlewareUnavailable);
             }
