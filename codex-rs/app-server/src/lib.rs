@@ -478,6 +478,9 @@ pub struct AppServerRuntimeOptions {
     pub remote_control_startup_mode: RemoteControlStartupMode,
     pub install_shutdown_signal_handler: bool,
     pub managed_daemon: bool,
+    /// An invocation-owned private directory to remove before a stdio watchdog
+    /// exit. Never populate this from an arbitrary CODEX_HOME or caller directory.
+    pub invocation_runtime_home: Option<std::path::PathBuf>,
 }
 
 impl Default for AppServerRuntimeOptions {
@@ -488,6 +491,7 @@ impl Default for AppServerRuntimeOptions {
             remote_control_startup_mode: RemoteControlStartupMode::ResolvePersisted,
             install_shutdown_signal_handler: true,
             managed_daemon: false,
+            invocation_runtime_home: None,
         }
     }
 }
@@ -804,6 +808,7 @@ pub async fn run_main_with_transport_options(
                 transport_event_tx.clone(),
                 stdio_client_name_tx,
                 runtime_options.install_shutdown_signal_handler,
+                runtime_options.invocation_runtime_home.clone(),
             )
             .await?;
             transport_accept_handles.push(handle);
