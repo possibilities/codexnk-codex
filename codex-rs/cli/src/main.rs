@@ -1269,9 +1269,14 @@ async fn cli_main(
                     "--identity, --capabilities, and --history-dir are only valid when running the app server"
                 );
             }
-            let invocation_loader_overrides = if let Some(axes) = &invocation_axes {
-                let prepared = invocation_axes::prepare_invocation_axes(axes)?;
-                invocation_axes::apply_invocation_home(&prepared)?;
+            // Retain the owner through startup and the app-server's entire run;
+            // early launch failures drop it without retaining copied credentials.
+            let prepared_invocation = invocation_axes
+                .as_ref()
+                .map(invocation_axes::prepare_invocation_axes)
+                .transpose()?;
+            let invocation_loader_overrides = if let Some(prepared) = &prepared_invocation {
+                invocation_axes::apply_invocation_home(prepared)?;
                 LoaderOverrides {
                     exclude_home_capabilities: true,
                     ..LoaderOverrides::default()
@@ -1325,7 +1330,13 @@ async fn cli_main(
                         auth,
                         runtime_options,
                     )
-                    .await?;
+                    .await;
+                    // Forced daemon exit bypasses destructors. Close explicitly
+                    // after teardown (including startup failure) and before exit.
+                    if let Some(prepared) = prepared_invocation {
+                        prepared.close()?;
+                    }
+                    let exit = exit?;
                     if exit == codex_app_server::AppServerExit::Forced {
                         // Runtime teardown can wait forever for blocked rollout I/O.
                         std::process::exit(0);
