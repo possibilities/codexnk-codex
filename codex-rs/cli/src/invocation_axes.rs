@@ -9,6 +9,7 @@
 //! Project config is loaded under runtime-local trust; home-directory skills and
 //! plugin marketplaces are excluded. CLI auth and MCP OAuth credentials stay
 //! in files under the runtime home.
+//! The prepared invocation owns that directory until app-server shutdown.
 
 use anyhow::Context;
 use std::collections::HashSet;
@@ -25,6 +26,17 @@ pub struct InvocationAxes {
 
 pub struct PreparedInvocation {
     pub codex_home: PathBuf,
+    runtime: tempfile::TempDir,
+}
+
+impl PreparedInvocation {
+    /// Remove private launch state before an intentional process exit that skips
+    /// destructors, reporting cleanup failures instead of silently retaining it.
+    pub fn close(self) -> anyhow::Result<()> {
+        self.runtime
+            .close()
+            .context("remove invocation runtime directory")
+    }
 }
 
 pub fn invocation_axes_from_flags(
@@ -49,7 +61,7 @@ pub fn prepare_invocation_axes(axes: &InvocationAxes) -> anyhow::Result<Prepared
     let history = existing_dir(&axes.history, "--history-dir")?;
 
     let runtime = tempfile::TempDir::new().context("create invocation runtime directory")?;
-    let codex_home = runtime.keep();
+    let codex_home = runtime.path().to_path_buf();
 
     fs::create_dir_all(history.join("sessions")).context("create history sessions directory")?;
     fs::create_dir_all(history.join("archived_sessions"))
@@ -85,7 +97,10 @@ pub fn prepare_invocation_axes(axes: &InvocationAxes) -> anyhow::Result<Prepared
     }
 
     write_runtime_config(&capabilities, &codex_home)?;
-    Ok(PreparedInvocation { codex_home })
+    Ok(PreparedInvocation {
+        codex_home,
+        runtime,
+    })
 }
 
 /// Makes the current process load the prepared runtime as `CODEX_HOME`.

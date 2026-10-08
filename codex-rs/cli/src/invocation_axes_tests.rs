@@ -156,14 +156,14 @@ async fn app_server_flags_load_selected_and_project_skills_without_prior_codex_h
         app_server.read_response(request_id).await?;
     assert!(!runtime_home.join("auth.json").exists());
     assert_eq!(fs::read(identity.path().join("auth.json"))?, identity_auth);
-    drop(app_server);
-    for name in ["sessions", "archived_sessions"] {
-        #[cfg(windows)]
-        fs::remove_dir(runtime_home.join(name))?;
-        #[cfg(not(windows))]
-        fs::remove_file(runtime_home.join(name))?;
-    }
-    fs::remove_dir_all(runtime_home)?;
+    let exit = app_server.shutdown_gracefully().await?;
+    assert!(exit.success());
+    assert!(
+        !runtime_home.exists(),
+        "process exit removes its private runtime"
+    );
+    assert!(history.path().join("sessions").is_dir());
+    assert!(history.path().join("archived_sessions").is_dir());
     Ok(())
 }
 
@@ -295,8 +295,27 @@ fn axes_share_history_and_keep_identity_and_capabilities_apart() {
             .exists()
     );
 
-    cleanup_runtime(&prepared_a.codex_home);
-    cleanup_runtime(&prepared_b.codex_home);
+    let runtime_a = prepared_a.codex_home.clone();
+    let runtime_b = prepared_b.codex_home.clone();
+    drop(prepared_a);
+    assert!(
+        !runtime_a.exists(),
+        "dropping the owner removes copied credentials"
+    );
+    assert_eq!(
+        fs::read(runtime_b.join("auth.json")).expect("other runtime remains live"),
+        b"{\"token\":\"beta\"}"
+    );
+    drop(prepared_b);
+    assert!(!runtime_b.exists());
+    assert_eq!(
+        fs::read_to_string(shared_sessions.join("thread.txt")).expect("history survives"),
+        "same-history"
+    );
+    assert_eq!(
+        fs::read(identity_a.path().join("auth.json")).expect("identity survives"),
+        b"{\"token\":\"alpha\"}"
+    );
 }
 
 #[cfg(unix)]
@@ -347,15 +366,49 @@ fn linked_skills_are_copied_without_retaining_links_to_capabilities() {
         "changed at source"
     );
 
-    cleanup_runtime(&prepared.codex_home);
+    drop(prepared);
 }
 
-fn cleanup_runtime(codex_home: &Path) {
-    for name in ["sessions", "archived_sessions", "skills"] {
-        let path = codex_home.join(name);
-        if path.exists() {
-            let _ = fs::remove_file(&path);
-        }
+#[tokio::test]
+async fn invocation_axes_failed_preparation_removes_copied_credentials() -> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let identity = root.path().join("identity");
+    let capabilities = root.path().join("capabilities");
+    let history = root.path().join("history");
+    let runtime = root.path().join("runtime");
+    for path in [&identity, &capabilities, &history, &runtime] {
+        fs::create_dir(path)?;
     }
-    let _ = fs::remove_dir_all(codex_home);
+    let auth = br#"{"OPENAI_API_KEY":"failed-preparation-fixture-only"}"#;
+    fs::write(identity.join("auth.json"), auth)?;
+    // Config parsing happens after the identity file is copied into the runtime.
+    fs::write(capabilities.join("config.toml"), "[invalid TOML")?;
+    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    let result = tokio::process::Command::new(codex)
+        .arg("app-server")
+        .arg("--identity")
+        .arg(&identity)
+        .arg("--capabilities")
+        .arg(&capabilities)
+        .arg("--history-dir")
+        .arg(&history)
+        .env("TMPDIR", &runtime)
+        .env("TMP", &runtime)
+        .env("TEMP", &runtime)
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY")
+        .current_dir(root.path())
+        .output()
+        .await?;
+    assert!(!result.status.success());
+    assert!(String::from_utf8_lossy(&result.stderr).contains("parse"));
+    assert_eq!(
+        fs::read_dir(&runtime)?.count(),
+        0,
+        "failed preparation leaves no copied credentials"
+    );
+    assert_eq!(fs::read(identity.join("auth.json"))?, auth);
+    assert!(history.join("sessions").is_dir());
+    assert!(history.join("archived_sessions").is_dir());
+    Ok(())
 }
