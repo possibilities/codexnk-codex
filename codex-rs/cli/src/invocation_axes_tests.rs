@@ -412,3 +412,102 @@ async fn invocation_axes_failed_preparation_removes_copied_credentials() -> anyh
     assert!(history.join("archived_sessions").is_dir());
     Ok(())
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn invocation_axes_stdio_watchdog_removes_copied_credentials() -> anyhow::Result<()> {
+    use anyhow::Context;
+    use std::process::Stdio;
+    use tokio::io::AsyncBufReadExt;
+    use tokio::io::AsyncWriteExt;
+    use tokio::io::BufReader;
+    use tokio::time::Duration;
+    use tokio::time::Instant;
+    use tokio::time::timeout;
+
+    let root = tempfile::tempdir()?;
+    let identity = root.path().join("identity");
+    let capabilities = root.path().join("capabilities");
+    let history = root.path().join("history");
+    let runtime = root.path().join("runtime");
+    for path in [&identity, &capabilities, &history, &runtime] {
+        fs::create_dir(path)?;
+    }
+    let auth = br#"{"OPENAI_API_KEY":"watchdog-fixture-only"}"#;
+    fs::write(identity.join("auth.json"), auth)?;
+    let mut process = tokio::process::Command::new(codex_utils_cargo_bin::cargo_bin("codex")?)
+        .arg("app-server")
+        .arg("--identity")
+        .arg(&identity)
+        .arg("--capabilities")
+        .arg(&capabilities)
+        .arg("--history-dir")
+        .arg(&history)
+        .env("TMPDIR", &runtime)
+        .env("TMP", &runtime)
+        .env("TEMP", &runtime)
+        .env("RUST_LOG", "codex_app_server_transport=error")
+        .env("HOME", root.path())
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("CODEX_API_KEY")
+        .current_dir(root.path())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        // Leave stderr unread to force the real shutdown watchdog, not normal teardown.
+        .stderr(Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()?;
+    let mut stdin = process.stdin.take().context("missing stdin")?;
+    let mut stdout = BufReader::new(process.stdout.take().context("missing stdout")?).lines();
+    let initialize = serde_json::json!({
+        "id": 1, "method": "initialize",
+        "params": {"clientInfo": {"name": "invocation-watchdog-test", "version": "1"}}
+    });
+    stdin
+        .write_all(format!("{initialize}\n").as_bytes())
+        .await?;
+    let response = timeout(Duration::from_secs(10), stdout.next_line())
+        .await??
+        .context("app-server did not initialize")?;
+    let response: serde_json::Value = serde_json::from_str(&response)?;
+    assert!(response.get("result").is_some(), "{response}");
+    let runtime_home = fs::read_dir(&runtime)?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .find(|path| path.join("auth.json").is_file())
+        .context("missing copied credentials")?;
+    assert_eq!(fs::read(runtime_home.join("auth.json"))?, auth);
+    fs::write(
+        history.join("sessions/watchdog-sentinel"),
+        "history survives",
+    )?;
+    assert!(
+        timeout(
+            Duration::from_secs(2),
+            stdin.write_all(&b"{\n".repeat(1024 * 1024))
+        )
+        .await
+        .is_err(),
+        "expected stderr to block transport"
+    );
+    let signalled_at = Instant::now();
+    let status = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(process.id().context("missing pid")?.to_string())
+        .status()?;
+    assert!(status.success());
+    let status = timeout(Duration::from_secs(55), process.wait()).await??;
+    assert_eq!(status.code(), Some(1));
+    assert!(signalled_at.elapsed() >= Duration::from_secs(45));
+    assert!(
+        !runtime_home.exists(),
+        "watchdog removes copied credentials"
+    );
+    assert_eq!(fs::read(identity.join("auth.json"))?, auth);
+    assert_eq!(
+        fs::read_to_string(history.join("sessions/watchdog-sentinel"))?,
+        "history survives"
+    );
+    Ok(())
+}
