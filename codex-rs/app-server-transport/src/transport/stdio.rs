@@ -17,6 +17,7 @@ use std::io::BufRead;
 use std::io::ErrorKind;
 use std::io::Result as IoResult;
 use std::io::Write;
+use std::path::PathBuf;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -29,6 +30,7 @@ pub async fn start_stdio_connection(
     transport_event_tx: mpsc::Sender<TransportEvent>,
     initialize_client_name_tx: oneshot::Sender<String>,
     install_shutdown_signal_handler: bool,
+    invocation_runtime_home: Option<PathBuf>,
 ) -> IoResult<JoinHandle<()>> {
     let shutdown_signal = CancellationToken::new();
     #[cfg(unix)]
@@ -40,11 +42,12 @@ pub async fn start_stdio_connection(
         // watchdog must not depend on Tokio or synchronous transport logging.
         let mut signals = Signals::new([SIGTERM])?;
         let shutdown_signal = shutdown_signal.clone();
+        let invocation_runtime_home = invocation_runtime_home.clone();
         std::thread::Builder::new()
             .name("app-server-signal".to_string())
             .spawn(move || {
                 if signals.forever().next().is_some() {
-                    start_shutdown_watchdog();
+                    start_shutdown_watchdog(invocation_runtime_home);
                     shutdown_signal.cancel();
                 }
             })?;
@@ -125,7 +128,7 @@ pub async fn start_stdio_connection(
         // EOF can finish the transport before RPC or runtime cleanup. Start
         // the same process deadline even if no SIGTERM arrives.
         if cfg!(unix) && install_shutdown_signal_handler {
-            start_shutdown_watchdog();
+            start_shutdown_watchdog(invocation_runtime_home);
         }
         let _ = transport_event_tx_for_reader
             .send(TransportEvent::ConnectionClosed { connection_id })
@@ -165,20 +168,32 @@ pub async fn start_stdio_connection(
     }))
 }
 
-fn start_shutdown_watchdog() {
+fn start_shutdown_watchdog(invocation_runtime_home: Option<PathBuf>) {
     // EOF and SIGTERM can both start cleanup; keep the first process deadline.
     static STARTED: std::sync::Once = std::sync::Once::new();
     STARTED.call_once(|| {
+        let cleanup_on_spawn_failure = invocation_runtime_home.clone();
         std::thread::Builder::new()
             .name("app-server-shutdown".to_string())
-            .spawn(|| {
+            .spawn(move || {
                 // Allow the processor's 30s RPC drain, then bound even Tokio's
                 // runtime teardown. Do not log here: stderr may also be blocked.
                 std::thread::sleep(std::time::Duration::from_secs(45));
-                std::process::exit(/*code*/ 1);
+                exit_after_runtime_cleanup(invocation_runtime_home);
             })
-            .unwrap_or_else(|_| std::process::exit(/*code*/ 1));
+            .unwrap_or_else(|_| exit_after_runtime_cleanup(cleanup_on_spawn_failure));
     });
+}
+
+fn exit_after_runtime_cleanup(invocation_runtime_home: Option<PathBuf>) -> ! {
+    if let Some(path) = invocation_runtime_home {
+        // This exact path belongs to a scoped CLI invocation, not stock CODEX_HOME.
+        // remove_dir_all does not follow its History symlinks. Already-removed
+        // directories and cleanup failures retain the watchdog's failure status.
+        // Avoid Tokio and logging here: either may be the reason shutdown stalled.
+        let _ = std::fs::remove_dir_all(path);
+    }
+    std::process::exit(/*code*/ 1);
 }
 
 fn stdio_initialize_client_name(line: &str) -> Option<String> {

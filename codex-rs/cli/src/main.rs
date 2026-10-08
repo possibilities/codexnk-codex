@@ -1305,6 +1305,9 @@ async fn cli_main(
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
+                        invocation_runtime_home: prepared_invocation
+                            .as_ref()
+                            .map(|prepared| prepared.codex_home.clone()),
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)
                         {
                             (true, _) => {
@@ -1332,15 +1335,18 @@ async fn cli_main(
                     )
                     .await;
                     // Forced daemon exit bypasses destructors. Close explicitly
-                    // after teardown (including startup failure) and before exit.
-                    if let Some(prepared) = prepared_invocation {
-                        prepared.close()?;
-                    }
-                    let exit = exit?;
-                    if exit == codex_app_server::AppServerExit::Forced {
+                    // after app-server return (including startup failure) and before exit.
+                    let cleanup_result = prepared_invocation
+                        .map(invocation_axes::PreparedInvocation::close)
+                        .transpose();
+                    if matches!(&exit, Ok(codex_app_server::AppServerExit::Forced)) {
                         // Runtime teardown can wait forever for blocked rollout I/O.
-                        std::process::exit(0);
+                        // Cleanup failure must not fall back into runtime teardown;
+                        // report it through exit status without potentially blocked logging.
+                        std::process::exit(i32::from(cleanup_result.is_err()));
                     }
+                    cleanup_result?;
+                    exit?;
                 }
                 Some(AppServerSubcommand::Daemon(daemon_cli)) => match daemon_cli.subcommand {
                     AppServerDaemonSubcommand::Start => {
