@@ -69,7 +69,6 @@ async fn invocation_axes_survive_retained_session_and_mcp_refresh() {
         current.cwd.to_path_buf(),
         &incoming.config_layer_stack,
         current.codex_home.clone(),
-        /*default_zsh_path*/ None,
     )
     .await
     .unwrap();
