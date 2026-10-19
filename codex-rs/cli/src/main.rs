@@ -68,6 +68,7 @@ mod exec_server_auth;
 mod exec_server_command;
 mod exec_server_credential;
 mod exec_server_telemetry;
+mod invocation_axes;
 mod marketplace_cmd;
 mod mcp_cmd;
 mod mcp_login;
@@ -625,6 +626,18 @@ struct AppServerCommand {
 
     #[command(flatten)]
     auth: codex_websocket_auth::WebsocketAuthArgs,
+
+    /// Saved credential directory. Must be set with `--capabilities` and `--history-dir`.
+    #[arg(long, value_name = "DIR")]
+    identity: Option<PathBuf>,
+
+    /// Capability directory: `skills/`, `config.toml` `[mcp_servers]`/`[projects]`, and `SYSTEM_APPEND.md`.
+    #[arg(long, value_name = "DIR")]
+    capabilities: Option<PathBuf>,
+
+    /// Shared session history directory. Independent of identity and capabilities.
+    #[arg(long, value_name = "DIR")]
+    history_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, clap::Subcommand)]
@@ -1250,8 +1263,36 @@ async fn cli_main(
                 managed_daemon,
                 analytics_default_enabled,
                 auth,
+                identity,
+                capabilities,
+                history_dir,
             } = app_server_cli;
-            let strict_config = app_server_strict_config || root_strict_config;
+            let invocation_axes =
+                invocation_axes::invocation_axes_from_flags(identity, capabilities, history_dir)?;
+            if invocation_axes.is_some() && subcommand.is_some() {
+                anyhow::bail!(
+                    "--identity, --capabilities, and --history-dir are only valid when running the app server"
+                );
+            }
+            // Retain the owner through startup and the app-server's entire run;
+            // early launch failures drop it without retaining copied credentials.
+            let prepared_invocation = invocation_axes
+                .as_ref()
+                .map(invocation_axes::prepare_invocation_axes)
+                .transpose()?;
+            let invocation_loader_overrides = if let Some(prepared) = &prepared_invocation {
+                invocation_axes::apply_invocation_home(prepared)?;
+                LoaderOverrides {
+                    exclude_home_capabilities: true,
+                    ..LoaderOverrides::default()
+                }
+            } else {
+                LoaderOverrides::default()
+            };
+            // Falling back after a scoped policy conflict could discard a managed
+            // credential requirement rather than refusing the incompatible launch.
+            let strict_config =
+                app_server_strict_config || root_strict_config || invocation_axes.is_some();
             reject_strict_config_for_app_server_subcommand(strict_config, subcommand.as_ref())?;
             reject_remote_mode_for_app_server_subcommand(
                 root_remote.as_deref(),
@@ -1284,6 +1325,9 @@ async fn cli_main(
                     let runtime_options = codex_app_server::AppServerRuntimeOptions {
                         code_mode_host_transport: code_mode_host.into(),
                         managed_daemon,
+                        invocation_runtime_home: prepared_invocation
+                            .as_ref()
+                            .map(|prepared| prepared.codex_home.clone()),
                         remote_control_startup_mode: match (remote_control, remote_control_disabled)
                         {
                             (true, _) => {
@@ -1301,7 +1345,7 @@ async fn cli_main(
                     let exit = codex_app_server::run_main_with_transport_options(
                         arg0_paths.clone(),
                         root_config_overrides,
-                        LoaderOverrides::default(),
+                        invocation_loader_overrides,
                         strict_config,
                         analytics_default_enabled,
                         transport,
@@ -1309,11 +1353,20 @@ async fn cli_main(
                         auth,
                         runtime_options,
                     )
-                    .await?;
-                    if exit == codex_app_server::AppServerExit::Forced {
+                    .await;
+                    // Forced daemon exit bypasses destructors. Close explicitly
+                    // after app-server return (including startup failure) and before exit.
+                    let cleanup_result = prepared_invocation
+                        .map(invocation_axes::PreparedInvocation::close)
+                        .transpose();
+                    if matches!(&exit, Ok(codex_app_server::AppServerExit::Forced)) {
                         // Runtime teardown can wait forever for blocked rollout I/O.
-                        std::process::exit(0);
+                        // Cleanup failure must not fall back into runtime teardown;
+                        // report it through exit status without potentially blocked logging.
+                        std::process::exit(i32::from(cleanup_result.is_err()));
                     }
+                    cleanup_result?;
+                    exit?;
                 }
                 Some(AppServerSubcommand::Daemon(daemon_cli)) => match daemon_cli.subcommand {
                     AppServerDaemonSubcommand::Start => {

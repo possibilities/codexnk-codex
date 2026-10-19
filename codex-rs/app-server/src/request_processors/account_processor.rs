@@ -1550,7 +1550,13 @@ pub(crate) async fn logout_configured_account(
     let config = config_manager
         .load_latest_config(/*fallback_cwd*/ None)
         .await;
-    let scope = ema_auth_scope(auth_manager.auth_cached().as_ref());
+    // Scoped launches own no enterprise grants, including during startup sign-out
+    // or when refreshed policy cannot be loaded.
+    let scope = if fallback_config.config_layer_stack.excludes_home_capabilities() {
+        None
+    } else {
+        ema_auth_scope(auth_manager.auth_cached().as_ref())
+    };
     let enterprise_policy_failed = scope.is_some() && config.is_err();
     // Startup policy may belong to another workspace. Never use that fallback
     // to select a credential; a policy failure must not block primary logout.

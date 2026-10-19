@@ -226,6 +226,34 @@ fn write_skill(root: &AbsolutePathBuf, directory: &str, name: &str) -> AbsoluteP
     .expect("absolute skill path")
 }
 
+#[tokio::test]
+async fn scoped_capabilities_keep_project_skills_without_home_skills() {
+    let temp_dir = TempDir::new().expect("temp dir");
+    let home = absolute(temp_dir.path().join("home"));
+    let runtime = absolute(temp_dir.path().join("runtime"));
+    let project = absolute(temp_dir.path().join("project"));
+    fs::create_dir_all(project.join(".git")).expect("project marker");
+    fs::create_dir_all(project.join(".agents/skills")).expect("project agents skills");
+    let project_codex = project.join(".codex");
+
+    let roots = resolve_skill_roots_with_home_dir(
+        Some(Arc::clone(&LOCAL_FS)),
+        &stack(vec![user_layer(&runtime), project_layer(&project_codex)])
+            .without_home_capabilities(),
+        &project,
+        Some(&home),
+        Vec::new(),
+        Vec::new(),
+    )
+    .await;
+    let paths = roots.into_iter().map(|root| root.path).collect::<Vec<_>>();
+
+    assert!(paths.contains(&runtime.join("skills")));
+    assert!(paths.contains(&project_codex.join("skills")));
+    assert!(paths.contains(&project.join(".agents/skills")));
+    assert!(!paths.contains(&home.join(".agents/skills")));
+}
+
 fn expected_skill(path: AbsolutePathBuf, name: &str, scope: SkillScope) -> SkillMetadata {
     SkillMetadata {
         name: name.to_string(),
