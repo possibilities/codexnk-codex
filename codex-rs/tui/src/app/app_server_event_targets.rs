@@ -6,6 +6,9 @@ use codex_protocol::ThreadId;
 
 pub(super) fn server_request_thread_id(request: &ServerRequest) -> Option<ThreadId> {
     match request {
+        ServerRequest::InputMiddlewareRequest { params, .. } => {
+            ThreadId::from_string(&params.thread_id).ok()
+        }
         ServerRequest::CommandExecutionRequestApproval { params, .. } => {
             ThreadId::from_string(&params.thread_id).ok()
         }
@@ -46,6 +49,9 @@ pub(super) fn server_notification_thread_target(
     notification: &ServerNotification,
 ) -> ServerNotificationThreadTarget {
     let thread_id = match notification {
+        ServerNotification::InputMiddlewareResolved(notification) => {
+            Some(notification.thread_id.as_str())
+        }
         ServerNotification::Error(notification) => Some(notification.thread_id.as_str()),
         ServerNotification::ThreadStarted(notification) => Some(notification.thread.id.as_str()),
         ServerNotification::ThreadStatusChanged(notification) => {
