@@ -32,7 +32,7 @@ use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
 use tempfile::TempDir;
-use test_macros::test_matrix;
+use test_case::test_matrix;
 
 async fn attach(
     app_server: &mut TestAppServer,
