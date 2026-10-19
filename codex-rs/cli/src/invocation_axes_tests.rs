@@ -511,3 +511,75 @@ async fn invocation_axes_stdio_watchdog_removes_copied_credentials() -> anyhow::
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn invocation_axes_startup_config_preserves_isolation_and_cleans_runtime()
+-> anyhow::Result<()> {
+    let root = tempfile::tempdir()?;
+    let identity = root.path().join("identity");
+    let capabilities = root.path().join("capabilities");
+    let history = root.path().join("history");
+    let runtime = root.path().join("runtime");
+    for path in [&identity, &capabilities, &history, &runtime] {
+        fs::create_dir(path)?;
+    }
+    let auth = br#"{"OPENAI_API_KEY":"startup-config-fixture-only"}"#;
+    fs::write(identity.join("auth.json"), auth)?;
+    let codex = codex_utils_cargo_bin::cargo_bin("codex")?;
+    for sign_out in [false, true] {
+        for gateway in [false, true] {
+            let mut command = tokio::process::Command::new(&codex);
+            command
+                .arg("app-server")
+                .arg("--identity")
+                .arg(&identity)
+                .arg("--capabilities")
+                .arg(&capabilities)
+                .arg("--history-dir")
+                .arg(&history)
+                .arg("--print-startup-config")
+                .env("TMPDIR", &runtime)
+                .env("TMP", &runtime)
+                .env("TEMP", &runtime)
+                .env_remove("OPENAI_API_KEY")
+                .env_remove("CODEX_API_KEY")
+                .env_remove("CODEX_ACCESS_TOKEN")
+                .current_dir(root.path());
+            if sign_out {
+                command.arg("--startup-sign-out");
+            }
+            if gateway {
+                command.args([
+                    "-c", "model_provider='gateway'",
+                    "-c", "model_providers.gateway={name='Fixture gateway',base_url='https://gateway.example/v1',wire_api='responses',gateway_oauth={authorization_url='https://gateway.example/authorize',token_url='https://gateway.example/token',client_id='fixture',delivery={kind='header',name='X-Gateway-Authorization'}}}",
+                ]);
+            }
+            let output = command.output().await?;
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            if gateway {
+                assert!(
+                    !output.status.success(),
+                    "scoped gateway accepted: {stdout}"
+                );
+                assert!(
+                    stdout.contains("gateway OAuth is unavailable with invocation axes"),
+                    "{stdout}\n{stderr}"
+                );
+            } else {
+                assert!(output.status.success(), "{stdout}\n{stderr}");
+                let value: serde_json::Value = serde_json::from_str(&stdout)?;
+                assert!(value.get("configRequirements").is_some());
+            }
+            assert_eq!(
+                fs::read_dir(&runtime)?.count(),
+                0,
+                "startup leaves no private credentials"
+            );
+            assert_eq!(fs::read(identity.join("auth.json"))?, auth);
+            assert!(history.join("sessions").is_dir());
+            assert!(history.join("archived_sessions").is_dir());
+        }
+    }
+    Ok(())
+}
