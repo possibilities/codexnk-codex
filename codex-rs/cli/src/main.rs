@@ -1304,15 +1304,18 @@ async fn cli_main(
                     subcommand.is_none(),
                     "--print-startup-config cannot run a subcommand"
                 );
-                return codex_app_server::print_startup_config(
+                let result = codex_app_server::print_startup_config(
                     arg0_paths,
                     root_config_overrides,
-                    LoaderOverrides::default(),
+                    invocation_loader_overrides,
                     strict_config,
                     startup_config,
                 )
-                .await
-                .map_err(Into::into);
+                .await;
+                prepared_invocation
+                    .map(invocation_axes::PreparedInvocation::close)
+                    .transpose()?;
+                return result.map_err(Into::into);
             }
             match subcommand {
                 None => {
