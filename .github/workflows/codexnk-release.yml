@@ -137,7 +137,7 @@ jobs:
 
       - name: Upload Cargo timings
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-timings-codexnk-${{ matrix.target }}
           path: ${{ steps.setup_ci.outputs.cargo-target-dir }}/**/cargo-timings/cargo-timing.html
@@ -178,7 +178,7 @@ jobs:
           PY
           tar -C "${GITHUB_WORKSPACE}" -czf "${GITHUB_WORKSPACE}/${name}.tar.gz" "$name"
 
-      - uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: codex-${{ matrix.target }}
           path: codex-${{ matrix.target }}.tar.gz
@@ -228,14 +228,14 @@ jobs:
           tar -C "$release_dir" -czf "${GITHUB_WORKSPACE}/macos-${BENCHMARK_PROFILE}-benchmark.tar.gz" codex codex-code-mode-host
 
       - name: Upload benchmark binaries
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: macos-${{ inputs.macos_profile_benchmark }}-benchmark
           path: macos-${{ inputs.macos_profile_benchmark }}-benchmark.tar.gz
 
       - name: Upload benchmark timings
         if: always()
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: cargo-timings-macos-${{ inputs.macos_profile_benchmark }}-benchmark
           path: ${{ steps.setup_ci.outputs.cargo-target-dir }}/**/cargo-timings/cargo-timing.html
